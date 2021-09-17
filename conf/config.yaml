@@ -1,0 +1,10 @@
+hyper-params:  
+  batch_size: 32
+  total_batch: 414  # 32*414=13248. We have 13245 data samples
+  epochs: 400
+  test_batch_size: 32
+  lr: 0.001
+  seed: 0
+  cuda: False
+  log_interval: 10
+  save_model: True
