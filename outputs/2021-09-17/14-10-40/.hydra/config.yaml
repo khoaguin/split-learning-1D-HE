@@ -1,0 +1,9 @@
+batch_size: 32
+total_batch: 414
+epochs: 400
+test_batch_size: 32
+lr: 0.001
+seed: 0
+cuda: false
+save_model: true
+dry_run: true
