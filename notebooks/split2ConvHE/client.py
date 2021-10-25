@@ -233,7 +233,7 @@ class Client:
         for e in range(epoch):
             print(f"Epoch {e+1} -----")
             epoch_train_loss = 0.0
-            epoch_correct, epoch_total = 0, 0
+            epoch_correct, epoch_total_samples = 0, 0
 
             # training loop
             for i, batch in enumerate(self.train_loader):
@@ -263,7 +263,7 @@ class Client:
                 batch_loss: torch.Tensor = loss_func(y_hat, y)
                 epoch_train_loss += batch_loss.item()
                 epoch_correct += torch.sum(y_hat.argmax(dim=1) == y).item()
-                epoch_total += len(y)
+                epoch_total_samples += len(y)
 
                 debug = 1
                 # --- Backward pass ---
@@ -272,7 +272,7 @@ class Client:
             
             # save the average training losses and accuracies over all batches for each epoch
             train_losses.append(epoch_train_loss / total_batch)
-            train_accs.append(epoch_correct / epoch_total)
+            train_accs.append(epoch_correct / epoch_total_samples)
 
     def test():
         pass
