@@ -4,14 +4,14 @@ import socket
 import struct
 import time
 from pathlib import Path
-from typing import List, Union
+from typing import List, Union, Tuple
 
 import h5py
 import numpy as np
 import tenseal as ts
 import torch
-from torch.cuda import _sleep
 import torch.nn as nn
+from torch import Tensor
 from icecream import ic
 ic.configureOutput(includeContext=True)
 from tenseal.enc_context import Context
@@ -35,49 +35,95 @@ def recvall(sock, n) -> Union[None, bytes]:
     return data
 
 
-class EcgServer(nn.Module):
+class EcgServer:
     def __init__(self, init_weight_path: Union[str, Path]):
-        """Constructor
+        """The constructor
 
         Args:
             init_weight (str): the string path to the initial weight
-        """
-        super(EcgServer, self).__init__()
+        """        
         checkpoint = torch.load(init_weight_path)
-        self.linear3_weight: torch.Tensor = checkpoint["linear3.weight"]  # [128, 512]
-        self.linear3_bias: torch.Tensor = checkpoint["linear3.bias"]  # [128]
-        self.linear4_weight: torch.Tensor = checkpoint["linear4.weight"]  # [5, 128]
-        self.linear4_bias: torch.Tensor = checkpoint["linear4.bias"]  # [5]
+        self.params = dict(
+            W3 = checkpoint["linear3.weight"],  # [128, 512]
+            b3 = checkpoint["linear3.bias"],  # [128]
+            W4 = checkpoint["linear4.weight"],  # [5, 128]
+            b4 = checkpoint["linear4.bias"]  # [5]
+        )
+        self.grads = dict(
+            dJdW3 = torch.zeros(self.params["W3"].shape),
+            dJdb3 = torch.zeros(self.params["b3"].shape),
+            dJdW4 = torch.zeros(self.params["W4"].shape),
+            dJdb4 = torch.zeros(self.params["b4"].shape),
+        )
+        self.cache = dict()
 
     def enc_linear(self, 
                     enc_x: CKKSTensor, 
-                    W: torch.Tensor, 
-                    b: torch.Tensor) -> CKKSTensor:
+                    W: Tensor, 
+                    b: Tensor) -> Tuple[CKKSTensor, CKKSTensor]:
         """
         The linear layer on homomorphic encrypted data
         Based on https://pytorch.org/docs/stable/generated/torch.nn.Linear.html
         """
-        Wt = torch.transpose(W, 0, 1)
-        return enc_x.mm(Wt) + b
+        y = enc_x.mm(W.T) + b
+        dydW = enc_x
+        dydx = W
+        return y, dydW, dydx
 
     @staticmethod
-    def approx_leaky_relu(enc_x: CKKSTensor):
+    def approx_leaky_relu(enc_x: CKKSTensor) -> Tuple[CKKSTensor, CKKSTensor]:
         # 2.30556314780491e-19*x**5 - 0.000250098672095587*x**4 - 
         # 2.83384427035571e-17*x**3 + 0.0654264479654812*x**2 + 
         # 0.505000000000001*x + 0.854102848838318
-        return enc_x.polyval([0.854, 0.505, 0.0654])
+        c1, c2, c3 = 0.854, 0.505, 0.0654
+        y = enc_x.polyval([c1, c2, c3])
+        dydx = c2 + 2*c3*enc_x
+        return y, dydx
 
-    def forward(self, enc_x: CKKSTensor) -> CKKSTensor:
-        x = self.enc_linear(enc_x, self.linear3_weight, self.linear3_bias)  # [batch_size, 128]
-        x = EcgServer.approx_leaky_relu(x)
-        x = self.enc_linear(x, self.linear4_weight, self.linear4_bias)  # [batch_size, 5]
-        return x
+    def forward(self, he_a: CKKSTensor) -> CKKSTensor:
+        he_a0, da0dW3, _ = self.enc_linear(he_a, 
+                                        self.params["W3"], 
+                                        self.params["b3"])
+        he_a1, da1da0 = EcgServer.approx_leaky_relu(he_a0)
+        he_a2, da2dW4, da2da1  = self.enc_linear(he_a1, 
+                                                 self.params["W4"], 
+                                                 self.params["b4"]) 
+        
+        self.cache["da2dW4"] = da2dW4
+        self.cache["da2da1"] = da2da1
+        self.cache["da1da0"] = da1da0
+        self.cache["da0dW3"] = da0dW3
 
-    def backward(self):
-        """ 
-        Calculates the gradients
+        return he_a2
+
+    def backward(self, dJda2) -> CKKSTensor:
+        """Calculates the gradients of the loss function J w.r.t 
+            the weights and biases
+
+        Args:
+            dJda2 (Tensor): the gradient of the loss function w.r.t
+                            the output of the last linear layer
         """
-        raise NotImplementedError
+        self.grads["dJdb4"] = dJda2.sum(0)  # sum accross all samples in a batch
+        assert self.grads["dJdb4"].shape == self.params["b4"].shape, \
+            "the grad of the loss function w.r.t b4 and b4 must have the same shape"
+        
+        da2dW4_T: CKKSTensor = self.cache["da2dW4"].transpose()
+        self.grads["dJdW4"] = (da2dW4_T.mm(dJda2)).transpose()
+        assert self.grads["dJdW4"].shape == list(self.params["W4"].shape), \
+            "the grad of the loss function w.r.t W4 and W4 must have the same shape"
+
+        dJda1 = torch.matmul(dJda2, self.cache["da2da1"])
+        dJda0 = dJda1 * self.cache["da1da0"]  # element-wise multiplication
+        self.grads["dJdb3"] = dJda0.sum(0)  # sum accross all samples in a batch
+        assert self.grads["dJdb3"].shape == list(self.params["b3"].shape), \
+            "the grad of the loss function w.r.t b3 and b3 must have the same shape"
+
+        self.grads["dJdW3"] = (dJda0.transpose()).mm(self.cache["da0dW3"])
+        assert self.grads["dJdW3"].shape == list(self.params["W3"].shape), \
+            "the grad of the loss function w.r.t W3 and W3 must have the same shape"
+
+        debug = 1
 
     def update_params(self):
         """
@@ -172,14 +218,21 @@ class Server:
                                                    data=he_a_bytes)
                 # the server puts the encrypted activations 
                 # through 2 linear layers and send the outputs to the client
-                he_a2: CKKSTensor = self.ecg_model(he_a)
-                print(f"Server's outputs (he_a2): {he_a2}")
-                print("\U0001F602 Sending he_a2 to the client")
+                print("Doing the forward pass")
+                he_a2: CKKSTensor = self.ecg_model.forward(he_a)
+                print(f"Server's forward pass outputs (he_a2): {he_a2}")
+                print("\U0001F601 Sending he_a2 to the client")
                 self.send_msg(msg=he_a2.serialize())
                 
                 # --- Backward pass ---
-                debug = 1
-                
+                # get the the gradients of the loss w.r.t a2 from the client
+                dJda2_bytes: bytes = self.recv_msg()
+                print("\U0001F601 Received dJda2 from the client")
+                dJda2: Tensor = pickle.loads(dJda2_bytes)
+                # the server does the backward pass
+                print("Doing the backward pass")
+                self.ecg_model.backward(dJda2)
+
 
 def main():
     server = Server()

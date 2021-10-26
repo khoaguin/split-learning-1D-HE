@@ -13,6 +13,7 @@ import tenseal as ts
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch import Tensor
 from icecream import ic
 ic.configureOutput(includeContext=True)
 from tenseal.enc_context import Context
@@ -81,7 +82,7 @@ class EcgClient(nn.Module):
         self.load_init_weights(init_weight_path)
         self.context = context
     
-    def forward(self, x: torch.Tensor) -> CKKSTensor:
+    def forward(self, x: Tensor) -> CKKSTensor:
         x = self.conv1(x)  # [batch_size, 16, 128]
         x = self.relu1(x)
         x = self.pool1(x)  # [batch_size, 16, 64]
@@ -238,10 +239,10 @@ class Client:
             # training loop
             for i, batch in enumerate(self.train_loader):
                 # --- Forward Pass ---
+                start = time.time()
                 x, y = batch  # get the input data and ground-truth output in the batch
                 x, y = x.to(self.device), y.to(self.device)  # put to cuda or cpu
                 he_a: CKKSTensor = self.ecg_model(x)  # [batch_size, 512]
-                print(f'Encrypted activations (he_a): {he_a}')
                 # converting the HE encrypted activation maps into byte stream
                 he_a_bytes: bytes = he_a.serialize() 
                 # the client sends the byte streams to the server
@@ -250,23 +251,32 @@ class Client:
                 # the client receives the encrypted activations after 2 linear layers 
                 # from the server
                 he_a2_bytes: bytes = self.recv_msg()
-                print("\U0001F602 Received he_a2 from the server")
+                print("\U0001F601 Received he_a2 from the server")
                 he_a2: CKKSTensor = CKKSTensor.load(context=self.context,
                                                     data=he_a2_bytes)
                 # the client decrypts he_a2 and apply softmax to get the predictions
                 a2: List = he_a2.decrypt().tolist() # the client decrypts he_a2
-                print(f"Decrypted activations: {a2}")
-                y_hat: torch.Tensor = F.softmax(torch.tensor(a2), dim=1)  # apply softmax
-                y_hat = y_hat.to(self.device)
+                a2: Tensor = torch.tensor(a2, requires_grad=True).to(self.device)
+                a2.retain_grad()
+                y_hat: Tensor = F.softmax(a2, dim=1)  # apply softmax
                 print(f'y_hat: {y_hat}')
-                # the client calculates the training loss and accuracy
-                batch_loss: torch.Tensor = loss_func(y_hat, y)
+                # the client calculates the training loss (J) and accuracy
+                batch_loss: Tensor = loss_func(y_hat, y)
                 epoch_train_loss += batch_loss.item()
                 epoch_correct += torch.sum(y_hat.argmax(dim=1) == y).item()
                 epoch_total_samples += len(y)
 
-                debug = 1
+                end = time.time()
+                print(f'time taken for the one forward pass: {end-start}')
+
                 # --- Backward pass ---
+                # calculates the gradients of the loss w.r.t y_hat and a2
+                batch_loss.backward()
+                dJda2: Tensor = a2.grad.clone().detach().to("cpu")
+                # send the gradients to the server
+                dJda2_bytes: bytes = pickle.dumps(dJda2)
+                print("\U0001F601 Sending dJda2 to the server")
+                self.send_msg(msg=dJda2_bytes)
 
                 if i == total_batch-1: break
             
@@ -288,9 +298,9 @@ def main(hyperparams):
     client.load_ecg_dataset('data', 'train_ecg.hdf5', 'test_ecg.hdf5', 
                             hyperparams['batch_size'])
     client.make_tenseal_context(8192, 
-                                [40, 21, 21, 21, 21, 21, 21, 40], 
+                                [21, 21, 21, 21, 21, 21, 21], 
                                 pow(2, 21))
-    print("Sending the context to the server")
+    print("Sending the context to the server (without the private key)")
     client.send_context()
     client.build_model('init_weight.pth')
     client.set_random_seed(hyperparams['seed'])
