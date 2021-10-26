@@ -4,7 +4,7 @@ import socket
 import struct
 import time
 from pathlib import Path
-from typing import List, Union
+from typing import List, Union, Tuple
 import math
 
 import h5py
@@ -82,7 +82,7 @@ class EcgClient(nn.Module):
         self.load_init_weights(init_weight_path)
         self.context = context
     
-    def forward(self, x: Tensor) -> CKKSTensor:
+    def forward(self, x: Tensor) -> Tuple[Tensor, CKKSTensor]:
         x = self.conv1(x)  # [batch_size, 16, 128]
         x = self.relu1(x)
         x = self.pool1(x)  # [batch_size, 16, 64]
@@ -91,7 +91,7 @@ class EcgClient(nn.Module):
         x = self.pool2(x)
         x = x.view(-1, 32 * 16)  # [batch_size, 16, 32]
         enc_x: CKKSTensor = ts.ckks_tensor(self.context, x.tolist())  # [batch_size, 512]
-        return enc_x
+        return x, enc_x
     
     def load_init_weights(self, init_weight_path: Union[str, Path]):
         checkpoint = torch.load(init_weight_path)
@@ -221,7 +221,7 @@ class Client:
         torch.backends.cudnn.benchmark = False
         torch.backends.cudnn.deterministic = True
 
-    def train(self, epoch: int, total_batch: int):
+    def train(self, epoch: int, total_batch: int, lr: float):
         if self.ecg_model == None:
             raise TypeError("client's model has not been constructed yet")
         train_losses = list()
@@ -230,19 +230,21 @@ class Client:
         test_accs = list()
         best_test_acc = 0  # best test accuracy
         loss_func = nn.CrossEntropyLoss()
+        optimizer = Adam(self.ecg_model.parameters(), lr=lr)
 
         for e in range(epoch):
-            print(f"Epoch {e+1} -----")
+            print(f"---- Epoch {e+1} ----")
             epoch_train_loss = 0.0
             epoch_correct, epoch_total_samples = 0, 0
 
             # training loop
             for i, batch in enumerate(self.train_loader):
-                # --- Forward Pass ---
+                print("Forward Pass ---")
                 start = time.time()
+                optimizer.zero_grad()
                 x, y = batch  # get the input data and ground-truth output in the batch
                 x, y = x.to(self.device), y.to(self.device)  # put to cuda or cpu
-                he_a: CKKSTensor = self.ecg_model(x)  # [batch_size, 512]
+                a, he_a = self.ecg_model(x)  # [batch_size, 512]
                 # converting the HE encrypted activation maps into byte stream
                 he_a_bytes: bytes = he_a.serialize() 
                 # the client sends the byte streams to the server
@@ -259,30 +261,59 @@ class Client:
                 a2: Tensor = torch.tensor(a2, requires_grad=True).to(self.device)
                 a2.retain_grad()
                 y_hat: Tensor = F.softmax(a2, dim=1)  # apply softmax
-                print(f'y_hat: {y_hat}')
                 # the client calculates the training loss (J) and accuracy
                 batch_loss: Tensor = loss_func(y_hat, y)
                 epoch_train_loss += batch_loss.item()
                 epoch_correct += torch.sum(y_hat.argmax(dim=1) == y).item()
                 epoch_total_samples += len(y)
-
+                print(f"batch loss: {batch_loss.item()}")
                 end = time.time()
                 print(f'time taken for the one forward pass: {end-start}')
 
-                # --- Backward pass ---
-                # calculates the gradients of the loss w.r.t y_hat and a2
+                print("--- Backward Pass ---")
+                # calculates the gradients of the loss J w.r.t y_hat and a2
+                start = time.time()
                 batch_loss.backward()
                 dJda2: Tensor = a2.grad.clone().detach().to("cpu")
-                # send the gradients to the server
                 dJda2_bytes: bytes = pickle.dumps(dJda2)
                 print("\U0001F601 Sending dJda2 to the server")
                 self.send_msg(msg=dJda2_bytes)
+                grads_bytes: bytes = self.recv_msg()
+                print("\U0001F601 Received dJda, dJda0 from the server")
+                grads_bytes = pickle.loads(grads_bytes)
+                dJda: CKKSTensor = CKKSTensor.load(context=self.context,
+                                                   data=grads_bytes["dJda"])
+                assert dJda.shape == he_a.shape, \
+                    "the derivative of the loss w.r.t the activation map needs to have \
+                    the same shape with the activation map"
+                dJda0: CKKSTensor = CKKSTensor.load(context=self.context,
+                                                    data=grads_bytes["dJda0"])
+                # calculating dJdW3 for the server
+                dJda0 = torch.Tensor(dJda0.decrypt().tolist()).to(self.device)
+                dJdW3: Tensor = torch.matmul(dJda0.T, a)
+                print("\U0001F601 Sending dJdW3 to the server (in plain text)")
+                self.send_msg(msg=pickle.dumps(dJdW3.detach().to("cpu")))
+                # the client calculates the gradients of the loss w.r.t the 
+                # parameters of his model (using pytorch's autograd)
+                dJda = torch.Tensor(dJda.decrypt().tolist()).to(self.device)
+                a.backward(dJda)
+                # the client updates his parameters based on the calculated gradients
+                optimizer.step()
+                
+                end = time.time()
+                print(f'time taken for one backward pass: {end-start}')
 
-                if i == total_batch-1: break
+                debug = 1
+
+                if i == total_batch-1:
+                    break
             
             # save the average training losses and accuracies over all batches for each epoch
             train_losses.append(epoch_train_loss / total_batch)
             train_accs.append(epoch_correct / epoch_total_samples)
+            print(f"training loss: {train_losses[-1]:.4f}, " 
+                  f"training acc: {train_accs[-1]*100:.2f}")
+
 
     def test():
         pass
@@ -298,14 +329,15 @@ def main(hyperparams):
     client.load_ecg_dataset('data', 'train_ecg.hdf5', 'test_ecg.hdf5', 
                             hyperparams['batch_size'])
     client.make_tenseal_context(8192, 
-                                [21, 21, 21, 21, 21, 21, 21], 
+                                [40, 21, 21, 21, 21, 21, 21, 40], 
                                 pow(2, 21))
     print("Sending the context to the server (without the private key)")
     client.send_context()
     client.build_model('init_weight.pth')
     client.set_random_seed(hyperparams['seed'])
     client.train(epoch=hyperparams['epoch'], 
-                 total_batch=hyperparams['total_batch'])
+                 total_batch=hyperparams['total_batch'],
+                 lr=hyperparams['lr'])
 
     
 if __name__ == '__main__':
@@ -316,9 +348,9 @@ if __name__ == '__main__':
     
     dry_run = True # break after 2 batches for 2 epoch, set batch size to be 2
     if dry_run:
-        batch_size = 2
+        batch_size = 1
         epoch = 2
-        total_batch = 2
+        total_batch = 1
     else:
         batch_size = 32
         epoch = 400
