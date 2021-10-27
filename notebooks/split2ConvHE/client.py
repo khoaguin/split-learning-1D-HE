@@ -221,7 +221,22 @@ class Client:
         torch.backends.cudnn.benchmark = False
         torch.backends.cudnn.deterministic = True
 
-    def train(self, epoch: int, total_batch: int, lr: float):
+    def train(self, 
+              epoch: int, 
+              total_batch: int, 
+              lr: float, 
+              dry_run: bool) -> None:
+        """The training process on the client side
+
+        Args:
+            epoch (int): [description]
+            total_batch (int): [description]
+            lr (float): [description]
+            dry_run (bool): [description]
+
+        Raises:
+            TypeError: [description]
+        """
         if self.ecg_model == None:
             raise TypeError("client's model has not been constructed yet")
         train_losses = list()
@@ -236,11 +251,10 @@ class Client:
             print(f"---- Epoch {e+1} ----")
             epoch_train_loss = 0.0
             epoch_correct, epoch_total_samples = 0, 0
-
+            start = time.time()
             # training loop
             for i, batch in enumerate(self.train_loader):
                 print("Forward Pass ---")
-                start = time.time()
                 optimizer.zero_grad()
                 x, y = batch  # get the input data and ground-truth output in the batch
                 x, y = x.to(self.device), y.to(self.device)  # put to cuda or cpu
@@ -248,12 +262,12 @@ class Client:
                 # converting the HE encrypted activation maps into byte stream
                 he_a_bytes: bytes = he_a.serialize() 
                 # the client sends the byte streams to the server
-                print("\U0001F601 Sending he_a to the server")
+                if dry_run: print("\U0001F601 Sending he_a to the server")
                 self.send_msg(msg=he_a_bytes)
                 # the client receives the encrypted activations after 2 linear layers 
                 # from the server
                 he_a2_bytes: bytes = self.recv_msg()
-                print("\U0001F601 Received he_a2 from the server")
+                if dry_run: print("\U0001F601 Received he_a2 from the server")
                 he_a2: CKKSTensor = CKKSTensor.load(context=self.context,
                                                     data=he_a2_bytes)
                 # the client decrypts he_a2 and apply softmax to get the predictions
@@ -266,44 +280,44 @@ class Client:
                 epoch_train_loss += batch_loss.item()
                 epoch_correct += torch.sum(y_hat.argmax(dim=1) == y).item()
                 epoch_total_samples += len(y)
-                print(f"batch loss: {batch_loss.item()}")
-                end = time.time()
-                print(f'time taken for the one forward pass: {end-start}')
+                print(f'batch {i+1} loss: {batch_loss:.2f}')
 
-                print("--- Backward Pass ---")
-                # calculates the gradients of the loss J w.r.t y_hat and a2
-                start = time.time()
+                print("Backward Pass ---")
+                # calculates the gradients of the loss J w.r.t a2 and send to the server
                 batch_loss.backward()
                 dJda2: Tensor = a2.grad.clone().detach().to("cpu")
                 dJda2_bytes: bytes = pickle.dumps(dJda2)
-                print("\U0001F601 Sending dJda2 to the server")
+                if dry_run: print("\U0001F601 Sending dJda2 to the server")
                 self.send_msg(msg=dJda2_bytes)
                 grads_bytes: bytes = self.recv_msg()
-                print("\U0001F601 Received dJda, dJda0 from the server")
+                if dry_run: print("\U0001F601 Received dJda, dJda0, dJdW4 from the server")
                 grads_bytes = pickle.loads(grads_bytes)
                 dJda: CKKSTensor = CKKSTensor.load(context=self.context,
                                                    data=grads_bytes["dJda"])
-                assert dJda.shape == he_a.shape, \
-                    "the derivative of the loss w.r.t the activation map needs to have \
-                    the same shape with the activation map"
                 dJda0: CKKSTensor = CKKSTensor.load(context=self.context,
                                                     data=grads_bytes["dJda0"])
-                # calculating dJdW3 for the server
-                dJda0 = torch.Tensor(dJda0.decrypt().tolist()).to(self.device)
+                dJdW4: CKKSTensor = CKKSTensor.load(context=self.context,
+                                                    data=grads_bytes["dJdW4"])
+                # calculating dJdW3, dJdb3, decrypt dJdW4 for the server
+                dJda0 = torch.tensor(dJda0.decrypt().tolist()).to(self.device)
                 dJdW3: Tensor = torch.matmul(dJda0.T, a)
-                print("\U0001F601 Sending dJdW3 to the server (in plain text)")
-                self.send_msg(msg=pickle.dumps(dJdW3.detach().to("cpu")))
+                dJdW3 = dJdW3.detach().to("cpu")
+                dJdb3: Tensor = dJda0.sum(0)
+                dJdb3 = dJdb3.detach().to("cpu")
+                dJdW4 = torch.tensor(dJdW4.decrypt().tolist())
+                if dry_run: print("\U0001F601 Sending dJdW3, dJdb3, dJdW4 in plaintext to the server")
+                grads_plaintext = {
+                    "dJdW3": dJdW3,
+                    "dJdb3": dJdb3,
+                    "dJdW4": dJdW4
+                }
+                self.send_msg(msg=pickle.dumps(grads_plaintext))
                 # the client calculates the gradients of the loss w.r.t the 
                 # parameters of his model (using pytorch's autograd)
                 dJda = torch.Tensor(dJda.decrypt().tolist()).to(self.device)
                 a.backward(dJda)
                 # the client updates his parameters based on the calculated gradients
                 optimizer.step()
-                
-                end = time.time()
-                print(f'time taken for one backward pass: {end-start}')
-
-                debug = 1
 
                 if i == total_batch-1:
                     break
@@ -313,7 +327,12 @@ class Client:
             train_accs.append(epoch_correct / epoch_total_samples)
             print(f"training loss: {train_losses[-1]:.4f}, " 
                   f"training acc: {train_accs[-1]*100:.2f}")
-
+            
+            end = time.time()
+            print(f'time taken for one epoch: {end-start:.2f}s')
+        
+        # save the model's parameters to .pt file
+        # self.ecg_model
 
     def test():
         pass
@@ -324,20 +343,21 @@ def main(hyperparams):
     client.init_socket(host, port)
     # sending hyperparameters to the server
     ic(hyperparams)
-    print("Sending hyperparams to the server")
+    print("\U0001F601 Sending hyperparams to the server")
     client.send_msg(msg=pickle.dumps(hyperparams))
     client.load_ecg_dataset('data', 'train_ecg.hdf5', 'test_ecg.hdf5', 
                             hyperparams['batch_size'])
     client.make_tenseal_context(8192, 
                                 [40, 21, 21, 21, 21, 21, 21, 40], 
                                 pow(2, 21))
-    print("Sending the context to the server (without the private key)")
+    print("\U0001F601 Sending the context to the server (without the private key)")
     client.send_context()
     client.build_model('init_weight.pth')
     client.set_random_seed(hyperparams['seed'])
     client.train(epoch=hyperparams['epoch'], 
                  total_batch=hyperparams['total_batch'],
-                 lr=hyperparams['lr'])
+                 lr=hyperparams['lr'],
+                 dry_run=hyperparams['dry_run'])
 
     
 if __name__ == '__main__':
@@ -346,19 +366,20 @@ if __name__ == '__main__':
     port = 10080
     max_recv = 4096
     
-    dry_run = True # break after 2 batches for 2 epoch, set batch size to be 2
+    dry_run = False # smaller dataset
     if dry_run:
-        batch_size = 1
+        batch_size = 2
         epoch = 2
         total_batch = 1
     else:
-        batch_size = 32
+        batch_size = 2
         epoch = 400
         total_batch = math.ceil(13245/batch_size)
-    lr = 0.001
+    lr = 1
     seed = 0
 
     hyperparams = {
+        'dry_run': dry_run,
         'batch_size': batch_size,
         'total_batch': total_batch,
         'epoch': epoch,

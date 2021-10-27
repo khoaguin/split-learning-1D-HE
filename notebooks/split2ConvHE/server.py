@@ -50,10 +50,10 @@ class EcgServer:
             b4 = checkpoint["linear4.bias"]  # [5]
         )
         self.grads = dict(
-            dJdW3 = None,
-            dJdb3 = None,
-            dJdW4 = None,
-            dJdb4 = None
+            dJdW3 = torch.zeros(self.params["W3"].shape),
+            dJdb3 = torch.zeros(self.params["b3"].shape),
+            dJdW4 = torch.zeros(self.params["W4"].shape),
+            dJdb4 = torch.zeros(self.params["b4"].shape)
         )
         self.cache = dict()
 
@@ -85,23 +85,24 @@ class EcgServer:
         return y, dydx
 
     def forward(self, he_a: CKKSTensor) -> CKKSTensor:
-        he_a0, da0dW3, da0da = self.enc_linear(he_a, 
-                                        self.params["W3"], 
-                                        self.params["b3"])
+        he_a0, enc_a, W3 = self.enc_linear(he_a, 
+                                           self.params["W3"], 
+                                           self.params["b3"])
         he_a1, da1da0 = EcgServer.approx_leaky_relu(he_a0)
-        he_a2, da2dW4, da2da1  = self.enc_linear(he_a1, 
+        he_a2, enc_a1, W4  = self.enc_linear(he_a1, 
                                                  self.params["W4"], 
                                                  self.params["b4"]) 
         
-        self.cache["da2dW4"] = da2dW4
-        self.cache["da2da1"] = da2da1
+        self.cache["da2dW4"] = enc_a1
+        self.cache["da2da1"] = W4
         self.cache["da1da0"] = da1da0
-        self.cache["da0dW3"] = da0dW3
-        self.cache["da0da"] = da0da
+        self.cache["da0dW3"] = enc_a
+        self.cache["da0da"] = W3
 
         return he_a2
 
-    def backward(self, dJda2) -> Tuple[CKKSTensor, CKKSTensor]:
+    def backward(self, dJda2) \
+        -> Tuple[CKKSTensor, CKKSTensor, CKKSTensor, CKKSTensor]:
         """Calculates the gradients of the loss function J w.r.t 
             the weights and biases
 
@@ -112,22 +113,24 @@ class EcgServer:
             dJda (CKKSTensor): the gradient of the loss function w.r.t
                             the encrypted activation map received from the client
             dJda0 (CKKSTensor): sends this to the client so he can decrypt
-                            and calculate 
+                            and calculate dJdW3 and dJdb3 for the server
+            dJdW4 (CKKSTensor): send this to the client so he decrypts it
+                                and then send it back to the server
         """
         self.grads["dJdb4"] = dJda2.sum(0)  # sum accross all samples in a batch
         assert self.grads["dJdb4"].shape == self.params["b4"].shape, \
             "the grad of the loss function w.r.t b4 and b4 must have the same shape"
         
         da2dW4_T: CKKSTensor = self.cache["da2dW4"].transpose()
-        self.grads["dJdW4"] = (da2dW4_T.mm(dJda2)).transpose()
-        assert self.grads["dJdW4"].shape == list(self.params["W4"].shape), \
+        dJdW4: CKKSTensor = (da2dW4_T.mm(dJda2)).transpose()
+        assert dJdW4.shape == list(self.params["W4"].shape), \
             "the grad of the loss function w.r.t W4 and W4 must have the same shape"
 
         dJda1: Tensor = torch.matmul(dJda2, self.cache["da2da1"])
         dJda0: CKKSTensor = dJda1 * self.cache["da1da0"]  # element-wise multiplication
-        self.grads["dJdb3"] = dJda0.sum(0)  # sum accross all samples in a batch
-        assert self.grads["dJdb3"].shape == list(self.params["b3"].shape), \
-            "the grad of the loss function w.r.t b3 and b3 must have the same shape"
+        # dJdb3: CKKSTensor = dJda0.sum(0)  # sum accross all samples in a batch
+        # assert dJdb3.shape == list(self.params["b3"].shape), \
+        #     "the grad of the loss function w.r.t b3 and b3 must have the same shape"
 
         # this causes out of memory error due to mul of 2 encrypted matrices
         # work around: send dJda0 to the client so he computes dJdW3 for the server
@@ -135,8 +138,25 @@ class EcgServer:
 
         dJda: CKKSTensor = dJda0.mm(self.cache["da0da"])
         
-        # send dJda0 to the client so he can find dJdW3 for the server
-        return dJda, dJda0
+        return dJda, dJda0, dJdW4
+
+    def check_update_grads(self, grads_plaintext) -> None:
+        """Check and update the gradients in plaintext received from the client
+
+        Args:
+            grads_plaintext ([dict]): the dictionary that contains the 
+                                      gradients needed in plaintext
+        """
+        assert grads_plaintext["dJdW3"].shape == self.grads["dJdW3"].shape, \
+            f"dJdW3 received from the client is in wrong shape"
+        assert grads_plaintext["dJdb3"].shape == self.grads["dJdb3"].shape, \
+            f"dJdb3 received from the client is in wrong shape"
+        assert grads_plaintext["dJdW4"].shape == self.grads["dJdW4"].shape, \
+            f"dJdW4 received from the client is in wrong shape"
+
+        self.grads["dJdW3"] = grads_plaintext["dJdW3"]
+        self.grads["dJdb3"] = grads_plaintext["dJdb3"]
+        self.grads["dJdW4"] = grads_plaintext["dJdW4"]
 
     def update_params(self, lr: float):
         """
@@ -147,10 +167,12 @@ class EcgServer:
         self.params["W4"] = self.params["W4"] - lr*self.grads["dJdW4"]
         self.params["b4"] = self.params["b4"] - lr*self.grads["dJdb4"]
 
-
     def clear_grad_and_cache(self):
+        """Clear the cache dictionary and make all grads zeros for the 
+           next forward pass on a new batch
+        """
         for grad in self.grads:
-            self.grads[grad] = None
+            self.grads[grad].zero_()
         self.cache = dict()
 
 
@@ -201,9 +223,10 @@ class Server:
     def build_model(self, init_weight_path: Union[str, Path]) -> None:
         """Build the neural network model for the server
         """
-        self.device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
-        print(f'server device: {torch.cuda.get_device_name(0)}')
         self.ecg_model = EcgServer(init_weight_path)
+        # currently the server only computes on cpu
+        # self.device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+        # print(f'server device: {torch.cuda.get_device_name(0)}')
         # self.ecg_model.to(self.device)
 
     def set_random_seed(self, seed: int) -> None:
@@ -219,71 +242,78 @@ class Server:
         torch.backends.cudnn.benchmark = False
         torch.backends.cudnn.deterministic = True
 
-    def train(self, epoch: int, total_batch: int, lr: float):
-        train_losses = list()
-        train_accs = list()
-        test_losses = list()
-        test_accs = list()
-        best_test_acc = 0  # best test accuracy
+    def train(self, 
+              epoch: int, 
+              total_batch: int, 
+              lr: float,
+              dry_run: bool):
+        """[summary]
 
+        Args:
+            epoch (int): [description]
+            total_batch (int): [description]
+            lr (float): [description]
+            dry_run (bool): [description]
+        """
         for e in range(epoch):
             print(f"---- Epoch {e+1} ----")
-            
-            train_loss = 0.0
-            correct, total = 0, 0
+            start = time.time()
             for i in range(total_batch):
+                if dry_run: print("\U0001F601 Received he_a from the client")
                 print("Forward pass ---")
                 self.ecg_model.clear_grad_and_cache()
                 # receive the encrypted activation maps from the client
                 he_a_bytes: bytes = self.recv_msg()
-                print("\U0001F601 Received he_a from the client")
                 he_a: CKKSTensor = CKKSTensor.load(context=self.client_ctx,
                                                    data=he_a_bytes)
                 # the server puts the encrypted activations 
                 # through 2 linear layers and send the outputs to the client
                 he_a2: CKKSTensor = self.ecg_model.forward(he_a)
-                print("\U0001F601 Sending he_a2 to the client")
+                if dry_run: print("\U0001F601 Sending he_a2 to the client")
                 self.send_msg(msg=he_a2.serialize())
                 
-                print("--- Backward pass --- ")
-                # get the the gradients of the loss w.r.t a2 from the client
                 dJda2_bytes: bytes = self.recv_msg()
-                print("\U0001F601 Received dJda2 from the client")
+                if dry_run: print("\U0001F601 Received dJda2 from the client")
+                print("Backward pass --- ")                
                 dJda2: Tensor = pickle.loads(dJda2_bytes)
                 # calculate the gradients of the loss w.r.t the weights and biases
-                dJda, dJda0 = self.ecg_model.backward(dJda2)
+                dJda, dJda0, dJdW4 = self.ecg_model.backward(dJda2)
                 # sending the gradients back to the client
-                print("\U0001F601 Sending dJda and dJda0 to the client")
                 grads_bytes = {
                     "dJda": dJda.serialize(),
-                    "dJda0": dJda0.serialize()
+                    "dJda0": dJda0.serialize(),
+                    "dJdW4": dJdW4.serialize()
                 }
+                if dry_run: print("\U0001F601 Sending dJda, dJda0, dJdW4 to the client")
                 self.send_msg(msg=pickle.dumps(grads_bytes))
-                print("\U0001F601 Received dJdW3 from the client")
-                self.ecg_model.grads["dJdW3"] = pickle.loads(self.recv_msg())
-                assert self.ecg_model.grads["dJdW3"].shape == self.ecg_model.params["W3"].shape, \
-                    "dJdW3 and W3 do not have the same shape"
-                # update the parameters based on the gradients
+                
+                grads_plaintext = self.recv_msg()
+                grads_plaintext = pickle.loads(grads_plaintext)
+                if dry_run: print("\U0001F601 Received dJdW3, dJdb3, dJdW4 from the client")
+                self.ecg_model.check_update_grads(grads_plaintext)
                 self.ecg_model.update_params(lr=lr)
+            
+            end = time.time()
+            print(f'time taken for one epoch: {end-start:.2f}s')
 
-                debug = 1
 
 def main():
     server = Server()
     server.init_socket(host, port)
     # receiving the hyperparameters from the clients
     hyperparams = server.recv_msg()
-    print("Receiving hyperparams from the client")
+    print("\U0001F601 Received the hyperparams from the client")
     hyperparams = pickle.loads(hyperparams)
     ic(hyperparams)
     server.build_model('init_weight.pth')
     server.set_random_seed(seed=hyperparams['seed'])
     # before training, receive the TenSeal context (without the secret key) from the client
     server.recv_ctx()
-    print("Received the tenseal context from the client")
+    print("\U0001F601 Received the tenseal context from the client")
     server.train(epoch=hyperparams['epoch'], 
                  total_batch=hyperparams['total_batch'],
-                 lr=hyperparams['lr'])
+                 lr=hyperparams['lr'],
+                 dry_run=hyperparams['dry_run'])
 
 
 if __name__ == '__main__':
