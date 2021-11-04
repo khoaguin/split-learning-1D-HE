@@ -73,5 +73,14 @@ def vanilla_split_two_convs(cfg : DictConfig) -> None:
     plot_losses_accs(cfg.dry_run, results_path)
     
 
+@hydra.main(config_path='conf', config_name='config2')
+def split_learning_he(cfg: DictConfig) -> None:
+    project_path = Path(get_original_cwd())
+    log.info(f'project_path: {project_path}')
+    output_path = Path(os.getcwd())
+    log.info(f'output_path: {output_path}')
+    log.info(OmegaConf.to_yaml(cfg))
+
+
 if __name__ == "__main__":
-    vanilla_split_two_convs()
+    split_learning_he()
