@@ -146,7 +146,7 @@ class EcgClient256(nn.Module):
         return x, enc_x
 
 
-class Client: 
+class Client:
     """
     The class that represents the client in the protocol.    
     """    

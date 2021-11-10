@@ -29,6 +29,76 @@ from torch.optim import SGD, Adam
 from torch.utils.data import DataLoader, Dataset
 
 
+class ECG(Dataset):
+    """The class used by the client to load the dataset
+
+    Args:
+        Dataset ([type]): [description]
+    """
+    def __init__(self, train_name: str, test_name: str, train=True):
+        if train:
+            with h5py.File(train_name, 'r') as hdf:
+                self.x = hdf['x_train'][:]
+                self.y = hdf['y_train'][:]
+        else:
+            with h5py.File(test_name, 'r') as hdf:
+                self.x = hdf['x_test'][:]
+                self.y = hdf['y_test'][:]
+    
+    def __len__(self):
+        return len(self.x)
+    
+    def __getitem__(self, idx):
+        return torch.tensor(self.x[idx], dtype=torch.float), \
+               torch.tensor(self.y[idx])
+
+
+class EcgClient256(nn.Module):
+    """The client's 1D CNN model
+
+    Args:
+        nn ([torch.Module]): [description]
+    """
+    def __init__(self, 
+                 context: Context, 
+                 init_weight_path: Union[str, Path]):
+        super(EcgClient256, self).__init__()
+        self.conv1 = nn.Conv1d(in_channels=1, 
+                               out_channels=16, 
+                               kernel_size=7, 
+                               padding=3,
+                               stride=1)  # 128 x 16
+        self.relu1 = nn.LeakyReLU()
+        self.pool1 = nn.MaxPool1d(2)  # 64 x 16
+        self.conv2 = nn.Conv1d(in_channels=16, 
+                               out_channels=8, 
+                               kernel_size=5, 
+                               padding=2)  # 64 x 8
+        self.relu2 = nn.LeakyReLU()
+        self.pool2 = nn.MaxPool1d(2)  # 32 x 8 = 256
+        
+        self.load_init_weights(init_weight_path)
+        self.context = context
+
+    def load_init_weights(self, init_weight_path: Union[str, Path]):
+        checkpoint = torch.load(init_weight_path)
+        self.conv1.weight.data = checkpoint["conv1.weight"]
+        self.conv1.bias.data = checkpoint["conv1.bias"]
+        self.conv2.weight.data = checkpoint["conv2.weight"]
+        self.conv2.bias.data = checkpoint["conv2.bias"]
+
+    def forward(self, x: Tensor) -> Tuple[Tensor, CKKSTensor]:
+        x = self.conv1(x)  
+        x = self.relu1(x)
+        x = self.pool1(x)  
+        x = self.conv2(x) 
+        x = self.relu2(x)
+        x = self.pool2(x)
+        x = x.view(-1, 256)  # [batch_size, 256]
+        enc_x: CKKSTensor = ts.ckks_tensor(self.context, x.tolist())
+        return x, enc_x
+
+
 class Client:
     """
     The class that represents the client in the protocol.    
@@ -146,9 +216,7 @@ class Client:
                            f"training time: {end-start:.2f}s"
             print(train_status)
             send_msg(sock=self.socket, msg=pickle.dumps(train_status))
-        
-        torch.save(self.ecg_model.state_dict(), 'weights/trained_client_256.pth')
-        
+                
         return train_losses, train_accs
 
     def training_loop(self, verbose, total_batch, loss_func, optimizer):
@@ -156,6 +224,7 @@ class Client:
         epoch_correct = 0 
         epoch_total_samples = 0
         for i, batch in enumerate(self.train_loader):
+            optimizer.zero_grad()
             if verbose: print("Forward Pass ---")
             x, y = batch  # get the input data and ground-truth output in the batch
             x, y = x.to(self.device), y.to(self.device)  # put to cuda or cpu
@@ -163,7 +232,7 @@ class Client:
             if verbose: print("\U0001F601 Sending he_a to the server")
             send_msg(sock=self.socket, msg=he_a.serialize())
             he_a2: CKKSTensor = CKKSTensor.load(context=self.context,
-                                                    data=recv_msg(sock=self.socket))
+                                                data=recv_msg(sock=self.socket))
             if verbose: print("\U0001F601 Received he_a2 from the server")
             a2: List = he_a2.decrypt().tolist() # the client decrypts he_a2
             a2: Tensor = torch.tensor(a2, requires_grad=True).to(self.device)
@@ -175,6 +244,7 @@ class Client:
             epoch_correct += torch.sum(y_hat.argmax(dim=1) == y).item()
             epoch_total_samples += len(y)
             if verbose: print(f'batch {i+1} loss: {batch_loss:.4f}')
+            
             if verbose: print("Backward Pass ---")
             batch_loss.backward()
             dJda2: Tensor = a2.grad.clone().detach()
@@ -196,77 +266,6 @@ class Client:
                 break
 
         return epoch_train_loss, epoch_correct, epoch_total_samples
-        
-                
-    
-class ECG(Dataset):
-    """The class used by the client to load the dataset
-
-    Args:
-        Dataset ([type]): [description]
-    """
-    def __init__(self, train_name: str, test_name: str, train=True):
-        if train:
-            with h5py.File(train_name, 'r') as hdf:
-                self.x = hdf['x_train'][:]
-                self.y = hdf['y_train'][:]
-        else:
-            with h5py.File(test_name, 'r') as hdf:
-                self.x = hdf['x_test'][:]
-                self.y = hdf['y_test'][:]
-    
-    def __len__(self):
-        return len(self.x)
-    
-    def __getitem__(self, idx):
-        return torch.tensor(self.x[idx], dtype=torch.float), \
-               torch.tensor(self.y[idx])
-
-
-class EcgClient256(nn.Module):
-    """The client's 1D CNN model
-
-    Args:
-        nn ([torch.Module]): [description]
-    """
-    def __init__(self, 
-                 context: Context, 
-                 init_weight_path: Union[str, Path]):
-        super(EcgClient256, self).__init__()
-        self.conv1 = nn.Conv1d(in_channels=1, 
-                               out_channels=16, 
-                               kernel_size=7, 
-                               padding=3,
-                               stride=1)  # 128 x 16
-        self.relu1 = nn.LeakyReLU()
-        self.pool1 = nn.MaxPool1d(2)  # 64 x 16
-        self.conv2 = nn.Conv1d(in_channels=16, 
-                               out_channels=8, 
-                               kernel_size=5, 
-                               padding=2)  # 64 x 8
-        self.relu2 = nn.LeakyReLU()
-        self.pool2 = nn.MaxPool1d(2)  # 32 x 8 = 256
-        
-        self.load_init_weights(init_weight_path)
-        self.context = context
-
-    def load_init_weights(self, init_weight_path: Union[str, Path]):
-        checkpoint = torch.load(init_weight_path)
-        self.conv1.weight.data = checkpoint["conv1.weight"]
-        self.conv1.bias.data = checkpoint["conv1.bias"]
-        self.conv2.weight.data = checkpoint["conv2.weight"]
-        self.conv2.bias.data = checkpoint["conv2.bias"]
-
-    def forward(self, x: Tensor) -> Tuple[Tensor, CKKSTensor]:
-        x = self.conv1(x)  
-        x = self.relu1(x)
-        x = self.pool1(x)  
-        x = self.conv2(x) 
-        x = self.relu2(x)
-        x = self.pool2(x)
-        x = x.view(-1, 256)  # [batch_size, 256]
-        enc_x: CKKSTensor = ts.ckks_tensor(self.context, x.tolist())
-        return x, enc_x
 
 
 def main():
@@ -291,7 +290,11 @@ def main():
             'train_losses': train_losses,
             'train_accs': train_accs,
         })
-    df.to_csv('./loss_and_acc.csv')
+    if hyperparams["save_model"]:
+        df.to_csv('./loss_and_acc2.csv')
+        torch.save(client.ecg_model.state_dict(), 
+                   'weights/trained_client_256.pth')
+
 
 if __name__ == "__main__":
     main()
