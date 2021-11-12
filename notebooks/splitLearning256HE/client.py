@@ -278,9 +278,12 @@ def main():
     client.load_ecg_dataset(train_name="data/train_ecg.hdf5",
                             test_name="data/test_ecg.hdf5",
                             batch_size=hyperparams["batch_size"])
-    client.make_tenseal_context(4096, 
-                                [40, 20, 20], 
-                                pow(2, 21))
+    # client.make_tenseal_context(4096, 
+    #                             [40, 20, 20], 
+    #                             pow(2, 21))
+    client.make_tenseal_context(2048, 
+                                [18, 18, 18], 
+                                pow(2, 16))
     if hyperparams["verbose"]:
         print("\U0001F601 Sending the context to the server (without the private key)")
     client.send_context()
@@ -290,10 +293,11 @@ def main():
             'train_losses': train_losses,
             'train_accs': train_accs,
         })
+
     if hyperparams["save_model"]:
         torch.save(client.ecg_model.state_dict(), 
-                   'weights/trained_client_256.pth')
-        df.to_csv('./loss_and_acc.csv')
+                   'weights/trained_client_256_2.pth')
+        df.to_csv('outputs/loss_and_acc_2.csv')
 
 
 if __name__ == "__main__":

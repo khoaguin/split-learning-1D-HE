@@ -193,9 +193,10 @@ def main(hyperparams):
         print("\U0001F601 Received the TenSeal context from the Client")
     server.build_model('weights/init_weight_256.pth')
     server.train(hyperparams)
+
     if hyperparams["save_model"]:
         torch.save(server.ecg_model.params, 
-                   'weights/trained_server_256.pth')
+                   'weights/trained_server_256_2.pth')
 
 
 if __name__ == "__main__":
