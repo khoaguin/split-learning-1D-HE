@@ -281,9 +281,12 @@ def main():
     # client.make_tenseal_context(4096, 
     #                             [40, 20, 20], 
     #                             pow(2, 21))
-    client.make_tenseal_context(2048, 
-                                [18, 18, 18], 
-                                pow(2, 16))
+    # client.make_tenseal_context(2048, 
+    #                             [18, 18, 18], 
+    #                             pow(2, 16))
+    client.make_tenseal_context(8192,
+                                [60, 40, 40, 60], 
+                                pow(2, 40))
     if hyperparams["verbose"]:
         print("\U0001F601 Sending the context to the server (without the private key)")
     client.send_context()
@@ -296,8 +299,8 @@ def main():
 
     if hyperparams["save_model"]:
         torch.save(client.ecg_model.state_dict(), 
-                   'weights/trained_client_256_2.pth')
-        df.to_csv('outputs/loss_and_acc_2.csv')
+                   'weights/trained_client_256_8192.pth')
+        df.to_csv('outputs/loss_and_acc_8192.csv')
 
 
 if __name__ == "__main__":
