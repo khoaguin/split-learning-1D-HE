@@ -1,9 +1,0 @@
-batch_size: 4
-total_batch: 414  # 32*414=13248. We have 13245 data samples
-epochs: 10
-test_batch_size: 4
-lr: 0.001
-seed: 0
-cuda: True
-save_model: True
-dry_run: False
