@@ -28,6 +28,9 @@ from tenseal.tensors.plaintensor import PlainTensor
 from torch.optim import SGD, Adam
 from torch.utils.data import DataLoader, Dataset
 
+project_path = Path(__file__).parents[1]
+print(f'project dir: {project_path}')
+
 
 class ECG(Dataset):
     """The class used by the client to load the dataset
@@ -35,7 +38,7 @@ class ECG(Dataset):
     Args:
         Dataset ([type]): [description]
     """
-    def __init__(self, train_name: str, test_name: str, train=True):
+    def __init__(self, train_name, test_name, train=True):
         if train:
             with h5py.File(train_name, 'r') as hdf:
                 self.x = hdf['x_train'][:]
@@ -53,7 +56,7 @@ class ECG(Dataset):
                torch.tensor(self.y[idx])
 
 
-class EcgClient256(nn.Module):
+class EcgClient512(nn.Module):
     """The client's 1D CNN model
 
     Args:
@@ -62,7 +65,7 @@ class EcgClient256(nn.Module):
     def __init__(self, 
                  context: Context, 
                  init_weight_path: Union[str, Path]):
-        super(EcgClient256, self).__init__()
+        super(EcgClient512, self).__init__()
         self.conv1 = nn.Conv1d(in_channels=1, 
                                out_channels=16, 
                                kernel_size=7, 
@@ -71,11 +74,11 @@ class EcgClient256(nn.Module):
         self.relu1 = nn.LeakyReLU()
         self.pool1 = nn.MaxPool1d(2)  # 64 x 16
         self.conv2 = nn.Conv1d(in_channels=16, 
-                               out_channels=8, 
+                               out_channels=16, 
                                kernel_size=5, 
-                               padding=2)  # 64 x 8
+                               padding=2)  # 64 x 16
         self.relu2 = nn.LeakyReLU()
-        self.pool2 = nn.MaxPool1d(2)  # 32 x 8 = 256
+        self.pool2 = nn.MaxPool1d(2)  # 32 x 16 = 512
         
         self.load_init_weights(init_weight_path)
         self.context = context
@@ -87,15 +90,20 @@ class EcgClient256(nn.Module):
         self.conv2.weight.data = checkpoint["conv2.weight"]
         self.conv2.bias.data = checkpoint["conv2.bias"]
 
-    def forward(self, x: Tensor) -> Tuple[Tensor, CKKSTensor]:
+    def forward(self, x: Tensor, batch_encrypted: bool) -> Tuple[Tensor, CKKSTensor]:
         x = self.conv1(x)  
         x = self.relu1(x)
         x = self.pool1(x)  
         x = self.conv2(x) 
         x = self.relu2(x)
         x = self.pool2(x)
-        x = x.view(-1, 256)  # [batch_size, 256]
-        enc_x: CKKSTensor = ts.ckks_tensor(self.context, x.tolist())
+        x = x.view(-1, 512)  # [batch_size, 512]
+        
+        if batch_encrypted: # if True, then enc_x.shape = [512]
+            enc_x: CKKSTensor = ts.ckks_tensor(self.context, x.tolist(), batch=True)
+        else:  # enc_x.shape = [batch_size, 512]
+            enc_x: CKKSTensor = ts.ckks_tensor(self.context, x.tolist(), batch=False)
+        
         return x, enc_x
 
 
@@ -178,7 +186,7 @@ class Client:
             raise TypeError("tenseal context is None")
         self.device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
         print(f'Client device: {torch.cuda.get_device_name(0)}')
-        self.ecg_model = EcgClient256(context=self.context, 
+        self.ecg_model = EcgClient512(context=self.context, 
                                       init_weight_path=init_weight_path)
         self.ecg_model.to(self.device)
 
@@ -206,8 +214,9 @@ class Client:
         for e in range(epoch):
             print(f"---- Epoch {e+1} ----")
             start = time.time()
-            e_train_loss, e_correct, e_samples = self.training_loop(verbose, total_batch, 
-                                                                    loss_func, optimizer)
+            e_train_loss, e_correct, e_samples = \
+                                    self.training_loop(verbose, loss_func, 
+                                        optimizer, hyperparams['batch_encrypted'])
             end = time.time()
             train_losses.append(e_train_loss / total_batch)
             train_accs.append(e_correct / e_samples)
@@ -219,23 +228,25 @@ class Client:
                 
         return train_losses, train_accs
 
-    def training_loop(self, verbose, total_batch, loss_func, optimizer):
+    def training_loop(self, verbose, loss_func, optimizer, batch_encrypted):
         epoch_train_loss = 0.0
         epoch_correct = 0 
         epoch_total_samples = 0
         for i, batch in enumerate(self.train_loader):
+            start = time.time()
             optimizer.zero_grad()
             if verbose: print("Forward Pass ---")
             x, y = batch  # get the input data and ground-truth output in the batch
             x, y = x.to(self.device), y.to(self.device)  # put to cuda or cpu
-            a, he_a = self.ecg_model(x)  # [batch_size, 256]
+            a, he_a = self.ecg_model.forward(x, batch_encrypted)
             if verbose: print("\U0001F601 Sending he_a to the server")
             send_msg(sock=self.socket, msg=he_a.serialize())
             he_a2: CKKSTensor = CKKSTensor.load(context=self.context,
                                                 data=recv_msg(sock=self.socket))
             if verbose: print("\U0001F601 Received he_a2 from the server")
             a2: List = he_a2.decrypt().tolist() # the client decrypts he_a2
-            a2: Tensor = torch.tensor(a2, requires_grad=True).to(self.device)
+            a2: Tensor = torch.tensor(a2, requires_grad=True)
+            a2 = a2.squeeze(dim=1).to(self.device)  # shape: [batch_size, 5]
             a2.retain_grad()
             y_hat: Tensor = F.softmax(a2, dim=1)  # apply softmax
             # the client calculates the training loss (J) and accuracy
@@ -248,7 +259,7 @@ class Client:
             if verbose: print("Backward Pass ---")
             batch_loss.backward()
             dJda2: Tensor = a2.grad.clone().detach()
-            dJdW = torch.matmul(dJda2.T, a)              
+            dJdW = torch.matmul(dJda2.T, a)
             server_grads = {
                 "dJda2": dJda2.to('cpu'),
                 "dJdW": dJdW.detach().to('cpu')
@@ -261,46 +272,52 @@ class Client:
             dJda = torch.Tensor(dJda.decrypt().tolist()).to(self.device)
             a.backward(dJda)  # calculating the gradients w.r.t the conv layers
             optimizer.step()  # updating the parameters
-
-            if i == total_batch-1:
-                break
+            end = time.time()
+            if verbose: print(f"training time for 1 batch: {end-start:.2f}s")
+            # if i == total_batch-1:
+            #     break
 
         return epoch_train_loss, epoch_correct, epoch_total_samples
 
 
 def main():
+    # establish the connection with the server
     client = Client()
     client.init_socket(host='localhost', port=10080)
     hyperparams = pickle.loads(recv_msg(sock=client.socket))
+    # receive the hyper params from the server
     if hyperparams["verbose"]:
         print("\U0001F601 Received the hyperparameters from the Server")
         print(hyperparams)
-    client.load_ecg_dataset(train_name="data/train_ecg.hdf5",
-                            test_name="data/test_ecg.hdf5",
+    # load the dataset
+    client.load_ecg_dataset(train_name=project_path/"data/train_ecg.hdf5",
+                            test_name=project_path/"data/test_ecg.hdf5",
                             batch_size=hyperparams["batch_size"])
+    # construct the tenseal context, send it to the server (without the private key)
     # client.make_tenseal_context(4096, 
-    #                             [40, 20, 20], 
-    #                             pow(2, 21))
+    #                             [40, 20, 40],
+    #                             pow(2, 20))
+    client.make_tenseal_context(8192,
+                                [40, 21, 21, 40], 
+                                pow(2, 21))
     # client.make_tenseal_context(2048, 
     #                             [18, 18, 18], 
-    #                             pow(2, 16))
-    client.make_tenseal_context(8192,
-                                [60, 40, 40, 60], 
-                                pow(2, 40))
+    #                             pow(2, 18))
     if hyperparams["verbose"]:
         print("\U0001F601 Sending the context to the server (without the private key)")
     client.send_context()
-    client.build_model('weights/init_weight_256.pth')
+    # build and train the model
+    client.build_model('./weights/init_weight.pth')
     train_losses, train_accs = client.train(hyperparams)
-    df = pd.DataFrame({  # save model training process into csv file
+    # save model training losses, accuracies and the trained weights
+    df = pd.DataFrame({  
             'train_losses': train_losses,
             'train_accs': train_accs,
         })
-
     if hyperparams["save_model"]:
         torch.save(client.ecg_model.state_dict(), 
-                   'weights/trained_client_256_8192.pth')
-        df.to_csv('outputs/loss_and_acc_8192.csv')
+                   './weights/trained_client_8192_noBatch.pth')
+        df.to_csv('./outputs/loss_and_acc_8192_noBatch.csv')
 
 
 if __name__ == "__main__":
