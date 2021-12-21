@@ -37,7 +37,7 @@ class ECGServer512:
                    enc_x: CKKSTensor, 
                    W: Tensor, 
                    b: Tensor,
-                   batch_encrypted):
+                   batch_encrypted: bool):
         """
         The linear layer on homomorphic encrypted data
         Based on https://pytorch.org/docs/stable/generated/torch.nn.Linear.html
@@ -153,6 +153,8 @@ class Server:
         lr = hyperparams["lr"]
         total_batch = hyperparams["total_batch"]
         epoch = hyperparams["epoch"]
+        batch_encrypted = hyperparams["batch_encrypted"]
+
         # set random seed
         np.random.seed(seed)
         torch.manual_seed(seed)
@@ -163,7 +165,7 @@ class Server:
 
         for e in range(epoch):
             print(f"---- Epoch {e+1} ----")
-            self.training_loop(total_batch, verbose, lr, hyperparams['batch_encrypted'])
+            self.training_loop(total_batch, verbose, lr, batch_encrypted)
             train_status = pickle.loads(recv_msg(self.socket))
             print(train_status)
 
@@ -195,6 +197,7 @@ def main(hyperparams):
     server.init_socket(host='localhost', port=10080)
     # send the hyperparameters to the client
     if hyperparams["verbose"]:
+        print(f"Hyperparams: {hyperparams}")
         print("\U0001F601 Sending the hyperparameters to the Client")
     send_msg(sock=server.socket, msg=pickle.dumps(hyperparams))
     # receive the tenseal context from the client

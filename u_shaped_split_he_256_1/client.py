@@ -90,7 +90,7 @@ class EcgClient256(nn.Module):
         self.conv2.weight.data = checkpoint["conv2.weight"]
         self.conv2.bias.data = checkpoint["conv2.bias"]
 
-    def forward(self, x: Tensor) -> Tuple[Tensor, CKKSTensor]:
+    def forward(self, x: Tensor, batch_encrypted: bool) -> Tuple[Tensor, CKKSTensor]:
         x = self.conv1(x)  
         x = self.relu1(x)
         x = self.pool1(x)  
@@ -98,8 +98,12 @@ class EcgClient256(nn.Module):
         x = self.relu2(x)
         x = self.pool2(x)
         x = x.view(-1, 256)  # [batch_size, 256]
-        enc_x: CKKSTensor = ts.ckks_tensor(self.context, x.tolist(), batch=True)
-        # if batch=True, then enc_x.shape = [256]
+        if batch_encrypted:
+            enc_x: CKKSTensor = ts.ckks_tensor(self.context, x.tolist(), batch=True)
+            # if batch=True, then enc_x.shape = [256]
+        else:
+            enc_x: CKKSTensor = ts.ckks_tensor(self.context, x.tolist(), batch=False)
+
         return x, enc_x
 
 
@@ -192,6 +196,7 @@ class Client:
         lr = hyperparams["lr"]
         total_batch = hyperparams["total_batch"]
         epoch = hyperparams["epoch"]
+        batch_encrypted = hyperparams['batch_encrypted']
         # set random seed
         np.random.seed(seed)
         torch.manual_seed(seed)
@@ -210,8 +215,8 @@ class Client:
         for e in range(epoch):
             print(f"---- Epoch {e+1} ----")
             start = time.time()
-            e_train_loss, e_correct, e_samples = self.training_loop(verbose, total_batch, 
-                                                                    loss_func, optimizer)
+            e_train_loss, e_correct, e_samples = \
+                self.training_loop(verbose, loss_func, optimizer, batch_encrypted)
             end = time.time()
             train_losses.append(e_train_loss / total_batch)
             train_accs.append(e_correct / e_samples)
@@ -223,7 +228,7 @@ class Client:
                 
         return train_losses, train_accs
 
-    def training_loop(self, verbose, total_batch, loss_func, optimizer):
+    def training_loop(self, verbose, loss_func, optimizer, batch_encrypted):
         epoch_train_loss = 0.0
         epoch_correct = 0 
         epoch_total_samples = 0
@@ -233,7 +238,7 @@ class Client:
             if verbose: print("Forward Pass ---")
             x, y = batch  # get the input data and ground-truth output in the batch
             x, y = x.to(self.device), y.to(self.device)  # put to cuda or cpu
-            a, he_a = self.ecg_model(x)  # [batch_size, 256]
+            a, he_a = self.ecg_model.forward(x, batch_encrypted)  # [batch_size, 256]
             if verbose: print("\U0001F601 Sending he_a to the server")
             send_msg(sock=self.socket, msg=he_a.serialize())
             he_a2: CKKSTensor = CKKSTensor.load(context=self.context,
@@ -241,7 +246,7 @@ class Client:
             if verbose: print("\U0001F601 Received he_a2 from the server")
             a2: List = he_a2.decrypt().tolist() # the client decrypts he_a2
             a2: Tensor = torch.tensor(a2, requires_grad=True)
-            a2 = a2.squeeze().to(self.device)
+            a2 = a2.squeeze(dim=1).to(self.device)
             a2.retain_grad()
             y_hat: Tensor = F.softmax(a2, dim=1)  # apply softmax
             # the client calculates the training loss (J) and accuracy
@@ -285,19 +290,19 @@ def main():
     client.load_ecg_dataset(train_name=project_path/"data/train_ecg.hdf5",
                             test_name=project_path/"data/test_ecg.hdf5",
                             batch_size=hyperparams["batch_size"])
-    client.make_tenseal_context(4096, 
-                                [40, 20, 40],
-                                pow(2, 20))
+    # client.make_tenseal_context(4096, 
+    #                             [40, 20, 40],
+    #                             pow(2, 20))
+    client.make_tenseal_context(8192,
+                                [40, 21, 21, 40], 
+                                pow(2, 21))
     # client.make_tenseal_context(2048, 
     #                             [18, 18, 18], 
     #                             pow(2, 18))
-    # client.make_tenseal_context(8192,
-    #                             [40, 21, 21, 40], 
-    #                             pow(2, 21))
     if hyperparams["verbose"]:
         print("\U0001F601 Sending the context to the server (without the private key)")
     client.send_context()
-    client.build_model(project_path/'weights/init_weight_256.pth')
+    client.build_model('weights/init_weight.pth')
     train_losses, train_accs = client.train(hyperparams)
     df = pd.DataFrame({  # save model training process into csv file
             'train_losses': train_losses,
@@ -306,8 +311,8 @@ def main():
 
     if hyperparams["save_model"]:
         torch.save(client.ecg_model.state_dict(), 
-                   project_path/'weights/trained_client_256_4096_batch.pth')
-        df.to_csv(project_path/'outputs/loss_and_acc_4096_batch.csv')
+                   './weights/trained_client_256_8192_nobatch.pth')
+        df.to_csv('./outputs/loss_and_acc_8192_nobatch.csv')
 
 
 if __name__ == "__main__":

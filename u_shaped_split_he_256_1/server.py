@@ -36,23 +36,27 @@ class ECGServer256:
     def enc_linear(self, 
                    enc_x: CKKSTensor, 
                    W: Tensor, 
-                   b: Tensor):
+                   b: Tensor,
+                   batch_encrypted: bool):
         """
         The linear layer on homomorphic encrypted data
         Based on https://pytorch.org/docs/stable/generated/torch.nn.Linear.html
         """
-        enc_x.reshape_([1, 256])
+        if batch_encrypted:
+            enc_x.reshape_([1, 256])
         Wt = W.T
-        y: CKKSTensor = enc_x.mm(Wt) + b  # encrypted using batch, y's shape: [1, 5]
+         # encrypted using batch, y's shape: [1, 5], otherwise [batch_size, 5]
+        y: CKKSTensor = enc_x.mm(Wt) + b 
         dydW = enc_x
         dydx = W
         return y, dydW, dydx
 
-    def forward(self, he_a: CKKSTensor) -> CKKSTensor:
+    def forward(self, he_a: CKKSTensor, batch_encrypted: bool) -> CKKSTensor:
         # a2 = a*W' + b
         he_a2, _, W = self.enc_linear(he_a, 
                                       self.params["W"],
-                                      self.params["b"])
+                                      self.params["b"],
+                                      batch_encrypted)
         self.cache["da2da"] = W
         return he_a2
 
@@ -149,6 +153,7 @@ class Server:
         lr = hyperparams["lr"]
         total_batch = hyperparams["total_batch"]
         epoch = hyperparams["epoch"]
+        batch_encrypted = hyperparams["batch_encrypted"]
         # set random seed
         np.random.seed(seed)
         torch.manual_seed(seed)
@@ -159,11 +164,11 @@ class Server:
 
         for e in range(epoch):
             print(f"---- Epoch {e+1} ----")
-            self.training_loop(total_batch, verbose, lr)
+            self.training_loop(total_batch, verbose, lr, batch_encrypted)
             train_status = pickle.loads(recv_msg(self.socket))
             print(train_status)
 
-    def training_loop(self, total_batch, verbose, lr):
+    def training_loop(self, total_batch, verbose, lr, batch_encrypted):
         for i in range(total_batch):
             self.ecg_model.clear_grad_and_cache()
             he_a = recv_msg(sock=self.socket)
@@ -171,7 +176,7 @@ class Server:
                                                data=he_a)
             # if verbose: print("\U0001F601 Received he_a from the client")
             # if verbose: print("Forward pass ---")
-            he_a2: CKKSTensor = self.ecg_model.forward(he_a)
+            he_a2: CKKSTensor = self.ecg_model.forward(he_a, batch_encrypted)
             # if verbose: print("\U0001F601 Sending he_a2 to the client")
             send_msg(sock=self.socket, msg=he_a2.serialize())
             
@@ -190,6 +195,7 @@ def main(hyperparams):
     server = Server()
     server.init_socket(host='localhost', port=10080)
     if hyperparams["verbose"]:
+        print(f"Hyperparams: {hyperparams}")
         print("\U0001F601 Sending the hyperparameters to the Client")
     send_msg(sock=server.socket, msg=pickle.dumps(hyperparams))
     # receive the tenseal context from the client
@@ -197,12 +203,12 @@ def main(hyperparams):
     if hyperparams["verbose"]:
         print("\U0001F601 Received the TenSeal context from the Client")
     # build and train the model
-    server.build_model(project_path/'weights/init_weight_256.pth')
+    server.build_model('weights/init_weight.pth')
     server.train(hyperparams)
     # save the model to .pth file
     if hyperparams["save_model"]:
         torch.save(server.ecg_model.params, 
-                   project_path/'weights/trained_server_256_4096_batch.pth')
+                   './weights/trained_server_256_8192_nobatch.pth')
 
 
 if __name__ == "__main__":
@@ -213,6 +219,7 @@ if __name__ == "__main__":
         'epoch': 10,
         'lr': 0.001,
         'seed': 0,
+        'batch_encrypted': True,
         'save_model': True
     }
     main(hyperparams)

@@ -196,6 +196,7 @@ class Client:
         lr = hyperparams["lr"]
         total_batch = hyperparams["total_batch"]
         epoch = hyperparams["epoch"]
+        batch_encrypted = hyperparams['batch_encrypted']
         # set random seed
         np.random.seed(seed)
         torch.manual_seed(seed)
@@ -216,7 +217,7 @@ class Client:
             start = time.time()
             e_train_loss, e_correct, e_samples = \
                                     self.training_loop(verbose, loss_func, 
-                                        optimizer, hyperparams['batch_encrypted'])
+                                        optimizer, batch_encrypted)
             end = time.time()
             train_losses.append(e_train_loss / total_batch)
             train_accs.append(e_correct / e_samples)
