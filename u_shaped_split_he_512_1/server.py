@@ -2,6 +2,7 @@ import pickle
 import socket
 from pathlib import Path
 from typing import Union
+import json
 
 from sockets import send_msg, recv_msg
 
@@ -115,11 +116,12 @@ class ECGServer512:
 
 
 class Server:
-    def __init__(self) -> None:
+    def __init__(self, log_obj) -> None:
         self.socket = None
         self.device = None
         self.ecg_model = None
         self.client_ctx = None
+        self.log_obj = log_obj
 
     def init_socket(self, host, port):
         """[summary]
@@ -167,7 +169,8 @@ class Server:
             print(f"---- Epoch {e+1} ----")
             self.training_loop(total_batch, verbose, lr, batch_encrypted)
             train_status = pickle.loads(recv_msg(self.socket))
-            print(train_status)
+            self.log_obj.write(train_status)
+            self.log_obj.write('\n')
 
     def training_loop(self, total_batch, verbose, lr, batch_encrypted):
         for i in range(total_batch):
@@ -192,13 +195,15 @@ class Server:
 
 
 def main(hyperparams):
+    # log file
+    log = open(hyperparams['log_file'], "w")
     # establish the connection with the client
-    server = Server()
+    server = Server(log)
     server.init_socket(host='localhost', port=10080)
     # send the hyperparameters to the client
     if hyperparams["verbose"]:
-        print(f"Hyperparams: {hyperparams}")
-        print("\U0001F601 Sending the hyperparameters to the Client")
+        log.write(json.dumps(hyperparams))
+        log.write("\U0001F601 Sending the hyperparameters to the Client")
     send_msg(sock=server.socket, msg=pickle.dumps(hyperparams))
     # receive the tenseal context from the client
     server.recv_ctx()
@@ -211,7 +216,7 @@ def main(hyperparams):
     if hyperparams["save_model"]:
         torch.save(server.ecg_model.params, 
                    './weights/trained_server_8192_noBatch.pth')
-
+    log.close()
 
 if __name__ == "__main__":
     hyperparams = {
@@ -222,6 +227,7 @@ if __name__ == "__main__":
         'lr': 0.001,
         'seed': 0,
         'batch_encrypted': False,
-        'save_model': True
+        'save_model': True,
+        'log_file': './outputs/512,8192,noBatch.txt'
     }
     main(hyperparams)

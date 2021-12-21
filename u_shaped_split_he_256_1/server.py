@@ -208,7 +208,7 @@ def main(hyperparams):
     # save the model to .pth file
     if hyperparams["save_model"]:
         torch.save(server.ecg_model.params, 
-                   './weights/trained_server_256_8192_nobatch.pth')
+                   './weights/trained_server_256_8192_batch.pth')
 
 
 if __name__ == "__main__":

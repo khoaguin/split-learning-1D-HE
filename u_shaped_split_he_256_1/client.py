@@ -311,8 +311,8 @@ def main():
 
     if hyperparams["save_model"]:
         torch.save(client.ecg_model.state_dict(), 
-                   './weights/trained_client_256_8192_nobatch.pth')
-        df.to_csv('./outputs/loss_and_acc_8192_nobatch.csv')
+                   './weights/trained_client_256_8192_batch.pth')
+        df.to_csv('./outputs/loss_and_acc_256_8192_batch.csv')
 
 
 if __name__ == "__main__":
