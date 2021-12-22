@@ -79,6 +79,7 @@ def main():
     host = 'localhost'
     port = 10080
     s = socket.socket()
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     s.bind((host, port))
     s.listen(5)
     conn, addr = s.accept()
