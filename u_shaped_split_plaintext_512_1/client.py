@@ -76,9 +76,9 @@ class ECGClient(nn.Module):
         self.conv2 = nn.Conv1d(in_channels=16, 
                                out_channels=8, 
                                kernel_size=5, 
-                               padding=2)  # 64 x 8
+                               padding=2)  # 64 x 16
         self.lrelu2 = nn.LeakyReLU()
-        self.pool2 = nn.MaxPool1d(2)  # 32 x 8 = 256
+        self.pool2 = nn.MaxPool1d(2)  # 32 x 16 = 512
     
     def forward(self, x):
         x = self.conv1(x)
@@ -87,7 +87,7 @@ class ECGClient(nn.Module):
         x = self.conv2(x)
         x = self.lrelu2(x)
         x = self.pool2(x)
-        x = x.view(-1, 256)
+        x = x.view(-1, 512)
 
         return x
 
@@ -168,7 +168,7 @@ def main():
     torch.backends.cudnn.benchmark = False
     torch.backends.cudnn.deterministic = True
     ecg_client = ECGClient()
-    checkpoint = torch.load(project_path/"weights/init_weight_256.pth")
+    checkpoint = torch.load("./weights/init_weight.pth")
     ecg_client.conv1.weight.data = checkpoint["conv1.weight"]
     ecg_client.conv1.bias.data = checkpoint["conv1.bias"]
     ecg_client.conv2.weight.data = checkpoint["conv2.weight"]
@@ -182,9 +182,9 @@ def main():
         'train_losses': train_losses,
         'train_accs': train_accs,
     })
-    # df.to_csv(project_path/'outputs/loss_and_acc_split_plaintext.csv')
-    # torch.save(ecg_client.state_dict(), 
-    #            project_path/'weights/trained_client_split_plaintext.pth')
+    df.to_csv('outputs/loss_and_acc.csv')
+    torch.save(ecg_client.state_dict(), 
+               './weights/trained_client.pth')
 
 
 main()

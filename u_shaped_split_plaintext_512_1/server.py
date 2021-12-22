@@ -38,7 +38,7 @@ def recvall(sock, n):
 class EcgServer(nn.Module):
     def __init__(self):
         super(EcgServer, self).__init__()
-        self.linear = nn.Linear(256, 5)
+        self.linear = nn.Linear(512, 5)
 
     def forward(self, x):
         x = self.linear(x)
@@ -87,15 +87,15 @@ def main():
     device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
     torch.cuda.get_device_name(0)
     ecg_server = EcgServer()
-    checkpoint = torch.load(project_path/"weights/init_weight_256.pth")
+    checkpoint = torch.load("./weights/init_weight.pth")
     ecg_server.linear.weight.data = checkpoint["linear.weight"]
     ecg_server.linear.bias.data = checkpoint["linear.bias"]
     ecg_server.to(device)
     # training
     total_batch = 3312
     train(ecg_server, device, conn, total_batch)
-    # torch.save(ecg_server.state_dict(), 
-    #            project_path/'weights/trained_server_split_plaintext.pth')
+    torch.save(ecg_server.state_dict(), 
+               './weights/trained_server.pth')
 
 
 main()
