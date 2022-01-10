@@ -116,12 +116,11 @@ class ECGServer512:
 
 
 class Server:
-    def __init__(self, log_obj) -> None:
+    def __init__(self) -> None:
         self.socket = None
         self.device = None
         self.ecg_model = None
         self.client_ctx = None
-        self.log_obj = log_obj
 
     def init_socket(self, host, port):
         """[summary]
@@ -169,8 +168,7 @@ class Server:
             print(f"---- Epoch {e+1} ----")
             self.training_loop(total_batch, verbose, lr, batch_encrypted)
             train_status = pickle.loads(recv_msg(self.socket))
-            self.log_obj.write(train_status)
-            self.log_obj.write('\n')
+            print(train_status)
 
     def training_loop(self, total_batch, verbose, lr, batch_encrypted):
         for i in range(total_batch):
@@ -195,15 +193,15 @@ class Server:
 
 
 def main(hyperparams):
-    # log file
-    log = open(hyperparams['log_file'], "w")
     # establish the connection with the client
-    server = Server(log)
+    server = Server()
     server.init_socket(host='localhost', port=10080)
     # send the hyperparameters to the client
     if hyperparams["verbose"]:
-        log.write(json.dumps(hyperparams))
-        log.write("\U0001F601 Sending the hyperparameters to the Client")
+        # print the context according to the client's config (to debug)
+        print("TenSeal context params: 4096, [40, 20, 20], pow(2, 21)")  
+        print(json.dumps(hyperparams))
+        print("\U0001F601 Sending the hyperparameters to the Client")
     send_msg(sock=server.socket, msg=pickle.dumps(hyperparams))
     # receive the tenseal context from the client
     server.recv_ctx()
@@ -215,8 +213,7 @@ def main(hyperparams):
     # save the model to .pth file
     if hyperparams["save_model"]:
         torch.save(server.ecg_model.params, 
-                   './weights/trained_server_8192_noBatch.pth')
-    log.close()
+                   './weights/trained_server_4096b_noBatch.pth')
 
 if __name__ == "__main__":
     hyperparams = {
@@ -228,6 +225,5 @@ if __name__ == "__main__":
         'seed': 0,
         'batch_encrypted': False,
         'save_model': True,
-        'log_file': './outputs/512,8192,noBatch.txt'
     }
     main(hyperparams)
