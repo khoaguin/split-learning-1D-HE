@@ -21,6 +21,7 @@ print(f'project dir: {project_path}')
 
 
 class ECGServer256:
+
     def __init__(self, init_weight_path: Union[str, Path]):
         checkpoint = torch.load(init_weight_path)
         self.params = dict(
@@ -196,7 +197,7 @@ def main(hyperparams):
     server.init_socket(host='localhost', port=10080)
     if hyperparams["verbose"]:
         # change this according to the client's HE params (for debug)
-        print("TenSeal context params: 2048, [18, 18, 18], pow(2, 18)")  
+        print("TenSeal context params: 2048, [18, 18, 18], pow(2, 16)")  
         print(f"Hyperparams: {hyperparams}")
         print("\U0001F601 Sending the hyperparameters to the Client")
     send_msg(sock=server.socket, msg=pickle.dumps(hyperparams))
@@ -210,7 +211,7 @@ def main(hyperparams):
     # save the model to .pth file
     if hyperparams["save_model"]:
         torch.save(server.ecg_model.params, 
-                   './weights/trained_server_256_2048_batchEncrypted.pth')
+                   './weights/trained_server_2048_batch.pth')
 
 
 if __name__ == "__main__":
