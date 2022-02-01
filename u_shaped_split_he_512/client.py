@@ -243,8 +243,9 @@ class Client:
             a, he_a = self.ecg_model.forward(x, batch_encrypted)
             if verbose: print("\U0001F601 Sending he_a to the server")
             send_msg(sock=self.socket, msg=he_a.serialize())
+            he_a2_bytes, _ = recv_msg(sock=self.socket)
             he_a2: CKKSTensor = CKKSTensor.load(context=self.context,
-                                                data=recv_msg(sock=self.socket))
+                                                data=he_a2_bytes)
             if verbose: print("\U0001F601 Received he_a2 from the server")
             a2: List = he_a2.decrypt().tolist() # the client decrypts he_a2
             a2: Tensor = torch.tensor(a2, requires_grad=True)
@@ -268,8 +269,9 @@ class Client:
             }
             if verbose: print("\U0001F601 Sending dJda2, dJdW to the server")
             send_msg(sock=self.socket, msg=pickle.dumps(server_grads))
+            dJda_bytes, _ = recv_msg(sock=self.socket)
             dJda: CKKSTensor = CKKSTensor.load(context=self.context,
-                                               data=recv_msg(sock=self.socket))
+                                               data=dJda_bytes)
             if verbose: print("\U0001F601 Received dJda from the server")
             dJda = torch.Tensor(dJda.decrypt().tolist()).to(self.device)
             a.backward(dJda)  # calculating the gradients w.r.t the conv layers
@@ -286,7 +288,8 @@ def main():
     # establish the connection with the server
     client = Client()
     client.init_socket(host='localhost', port=10080)
-    hyperparams = pickle.loads(recv_msg(sock=client.socket))
+    hyperparams, _ = recv_msg(sock=client.socket)
+    hyperparams = pickle.loads(hyperparams)
     # receive the hyper params from the server
     if hyperparams["verbose"]:
         print("\U0001F601 Received the hyperparameters from the Server")
@@ -296,21 +299,21 @@ def main():
                             test_name=project_path/"data/test_ecg.hdf5",
                             batch_size=hyperparams["batch_size"])
     # construct the tenseal context, send it to the server (without the private key)
-    # client.make_tenseal_context(4096, 
-    #                             [40, 20, 40],
-    #                             pow(2, 20))
-    # client.make_tenseal_context(4096,   # 4096b
-    #                            [40, 20, 20],
-    #                             pow(2, 21))
-    # client.make_tenseal_context(8192,
+    # client.make_tenseal_context(8192,  # 8192b
+    #                             [60, 40, 40, 60],
+    #                             pow(2, 40))
+    # client.make_tenseal_context(8192,  # 8192a
     #                             [40, 21, 21, 40], 
     #                             pow(2, 21))
-    client.make_tenseal_context(8192,  # 8192b
-                                [60, 40, 40, 60],
-                                pow(2, 40))
-    # client.make_tenseal_context(2048, 
-    #                             [18, 18, 18], 
-    #                             pow(2, 16))
+    # client.make_tenseal_context(4096,   # 4096b
+    #                             [40, 20, 20],
+    #                             pow(2, 21))
+    # client.make_tenseal_context(4096,     # 4096a
+    #                             [40, 20, 40],
+    #                             pow(2, 20))
+    client.make_tenseal_context(2048, 
+                                [18, 18, 18], 
+                                pow(2, 16))
     if hyperparams["verbose"]:
         print("\U0001F601 Sending the context to the server (without the private key)")
     client.send_context()

@@ -121,6 +121,7 @@ class Server:
         self.device = None
         self.ecg_model = None
         self.client_ctx = None
+        self.connection = None
 
     def init_socket(self, host, port):
         """[summary]
@@ -134,13 +135,12 @@ class Server:
         self.socket.bind((host, port))  # associates the socket with its local address
         self.socket.listen()
         print('Listening on', (host, port))
-        self.socket, addr = self.socket.accept()  # wait for the client to connect
-        print(f'Connection: {self.socket} \nAddress: {addr}')
+        self.connection, addr = self.socket.accept()  # wait for the client to connect
+        print(f'Connection: {self.connection} \nAddress: {addr}')
 
     def recv_ctx(self):
-        client_ctx_bytes: bytes = recv_msg(sock=self.socket)
+        client_ctx_bytes, _ = recv_msg(sock=self.connection)
         self.client_ctx: Context = Context.load(client_ctx_bytes)
-
 
     def build_model(self, 
                     init_weight_path: Union[str, Path]) -> None:
@@ -165,31 +165,43 @@ class Server:
 
         for e in range(epoch):
             print(f"---- Epoch {e+1} ----")
-            self.training_loop(total_batch, verbose, lr, batch_encrypted)
-            train_status = pickle.loads(recv_msg(self.socket))
-            print(train_status)
+            self.training_loop(total_batch, verbose, lr, batch_encrypted, epoch)
+            train_status, _ = recv_msg(self.connection)
+            print(pickle.loads(train_status))
 
-    def training_loop(self, total_batch, verbose, lr, batch_encrypted):
+    def training_loop(self, total_batch, verbose, lr, batch_encrypted, epoch):
+        avg_communication = 0
         for i in range(total_batch):
             self.ecg_model.clear_grad_and_cache()
-            he_a = recv_msg(sock=self.socket)
+            he_a, recv_size1 = recv_msg(sock=self.connection)
             he_a: CKKSTensor = CKKSTensor.load(context=self.client_ctx,
                                                data=he_a)
             # if verbose: print("\U0001F601 Received he_a from the client")
-            # if verbose: print("Forward pass ---")
+            if verbose: print("Forward pass ---")
             he_a2: CKKSTensor = self.ecg_model.forward(he_a, batch_encrypted)
             # if verbose: print("\U0001F601 Sending he_a2 to the client")
-            send_msg(sock=self.socket, msg=he_a2.serialize())
+            send_size1 = send_msg(sock=self.connection, msg=he_a2.serialize())
             
-            # if verbose: print("Backward pass --- ")
-            grads = pickle.loads(recv_msg(sock=self.socket))
+            if verbose: print("Backward pass --- ")
+            grads, recv_size2 = recv_msg(sock=self.connection)
+            grads = pickle.loads(grads)
             self.ecg_model.check_update_grads(grads["dJdW"])
             dJda: CKKSTensor = self.ecg_model.backward(grads["dJda2"], 
                                                        self.client_ctx)
             # if verbose: print("\U0001F601 Sending dJda to the client")
-            send_msg(sock=self.socket, msg=dJda.serialize())
+            send_size2 = send_msg(sock=self.connection, msg=dJda.serialize())
             self.ecg_model.update_params(lr=lr) # updating the parameters
 
+            comminucation_size = recv_size1 + recv_size2 + send_size1 + send_size2
+            avg_communication += comminucation_size
+
+            if i == 10:
+                print(f"avg communication for 1 forward and backward pass: "
+                      f"{avg_communication/10} (Mb)")
+                print(f"approximated total communication: "
+                      f"{avg_communication/10 * total_batch * epoch * 1e-6} (Tb)")
+                break
+                
 
 def main(hyperparams):
     # establish the connection with the client, send the hyperparameters
@@ -197,10 +209,10 @@ def main(hyperparams):
     server.init_socket(host='localhost', port=10080)
     if hyperparams["verbose"]:
         # change this according to the client's HE params (for debug)
-        print("TenSeal context params: 2048, [18, 18, 18], pow(2, 16)")  
+        # print("TenSeal context params: 2048, [18, 18, 18], pow(2, 16)")  
         print(f"Hyperparams: {hyperparams}")
         print("\U0001F601 Sending the hyperparameters to the Client")
-    send_msg(sock=server.socket, msg=pickle.dumps(hyperparams))
+    send_msg(sock=server.connection, msg=pickle.dumps(hyperparams))
     # receive the tenseal context from the client
     server.recv_ctx()
     if hyperparams["verbose"]:

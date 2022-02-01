@@ -14,35 +14,11 @@ import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 from torch.optim import Adam
 
+from sockets import send_msg, recv_msg
+
 
 project_path = Path(__file__).parents[1]
 print(f'project dir: {project_path}')
-
-def send_msg(sock, msg):
-    # prefix each message with a 4-byte length in network byte order
-    msg = struct.pack('>I', len(msg)) + msg
-    sock.sendall(msg)
-
-def recv_msg(sock):
-    # read message length and unpack it into an integer
-    raw_msglen = recvall(sock, 4)
-    if not raw_msglen:
-        return None
-    msglen = struct.unpack('>I', raw_msglen)[0]
-    # read the message data
-    msg_bytes = recvall(sock, msglen)
-    return msg_bytes
-
-def recvall(sock, n):
-    # helper function to receive n bytes or return None if EOF is hit
-    data = b''
-    while len(data) < n:
-        packet = sock.recv(n - len(data))
-        if not packet:
-            return None
-        data += packet
-    return data
-
 
 class ECG(Dataset):
     def __init__(self, train=True):
@@ -99,6 +75,7 @@ def train(ecg_client, train_loader, total_batch, device, soc):
     optimizer = Adam(ecg_client.parameters(), lr=lr)
     train_losses = list()
     train_accs = list()
+    total_comm = 0
 
     for e in range(epoch):
         start = time.time()
@@ -114,16 +91,18 @@ def train(ecg_client, train_loader, total_batch, device, soc):
             x, y = x.to(device), y.to(device)
             a = ecg_client(x)  # a: activation maps
             msg = a.clone().detach().requires_grad_(True)
-            send_msg(soc, pickle.dumps(msg))  # send the activation maps to the server
-            a2 = pickle.loads(recv_msg(soc))  # receives a2 from the server
+            send_size1 = send_msg(soc, pickle.dumps(msg))  # send the activation maps to the server
+            a2, recv_size1 = recv_msg(soc)
+            a2 = pickle.loads(a2)  # receives a2 from the server
             a2.retain_grad()
             y_hat = F.softmax(a2, dim=1)
             J = criterion(y_hat, y)  # the client calculate the loss
             # --- backward pass ---
             J.backward()
             dJda2 = a2.grad.clone().detach()
-            send_msg(soc, pickle.dumps(dJda2))  # send dJda2 to the server
-            dJda = pickle.loads(recv_msg(soc))   # receives dJ/da from the server
+            send_size2 = send_msg(soc, pickle.dumps(dJda2))  # send dJda2 to the server
+            dJda, recv_size2 = recv_msg(soc)
+            dJda = pickle.loads(dJda)   # receives dJ/da from the server
             # calculate the grad of the loss w.r.t the 
             # weights of the client's model
             a.backward(dJda)  
@@ -132,6 +111,8 @@ def train(ecg_client, train_loader, total_batch, device, soc):
             train_loss += J.item()
             correct += torch.sum(y_hat.argmax(dim=1) == y).item()
             total += len(y)
+            total_comm += send_size1+send_size2+recv_size1+recv_size2
+
 
         end = time.time()
         train_losses.append(train_loss / total_batch)
@@ -142,6 +123,7 @@ def train(ecg_client, train_loader, total_batch, device, soc):
         print(train_status, end='\n')
         send_msg(sock=soc, msg=pickle.dumps(train_status))
 
+    print(f"total communication: {total_comm:.2f} (Mb)")
     return train_losses, train_accs
         
 
@@ -150,6 +132,7 @@ def main():
     host = 'localhost'
     port = 10080
     s = socket.socket()
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     s.connect((host, port))
     print(f'connected to {s}')
     # making the dataset
@@ -182,9 +165,9 @@ def main():
         'train_losses': train_losses,
         'train_accs': train_accs,
     })
-    df.to_csv('outputs/loss_and_acc.csv')
-    torch.save(ecg_client.state_dict(), 
-               './weights/trained_client.pth')
+    # df.to_csv('outputs/loss_and_acc.csv')
+    # torch.save(ecg_client.state_dict(), 
+    #            './weights/trained_client.pth')
 
 
 main()

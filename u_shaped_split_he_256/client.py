@@ -172,8 +172,8 @@ class Client:
     def send_context(self) -> None:
         """Send the context to the server
         """
-        send_msg(sock=self.socket,
-                 msg=self.context.serialize(save_secret_key=False))
+        _ = send_msg(sock=self.socket,
+                     msg=self.context.serialize(save_secret_key=False))
 
     def build_model(self, init_weight_path: Union[str, Path]) -> None:
         """Build the neural network model for the client
@@ -224,7 +224,7 @@ class Client:
                            f"training acc: {train_accs[-1]*100:.2f}, "\
                            f"training time: {end-start:.2f}s"
             print(train_status)
-            send_msg(sock=self.socket, msg=pickle.dumps(train_status))
+            _ = send_msg(sock=self.socket, msg=pickle.dumps(train_status))
                 
         return train_losses, train_accs
 
@@ -240,9 +240,10 @@ class Client:
             x, y = x.to(self.device), y.to(self.device)  # put to cuda or cpu
             a, he_a = self.ecg_model.forward(x, batch_encrypted)  # [batch_size, 256]
             if verbose: print("\U0001F601 Sending he_a to the server")
-            send_msg(sock=self.socket, msg=he_a.serialize())
+            _ = send_msg(sock=self.socket, msg=he_a.serialize())
+            he_a2_bytes, _ = recv_msg(sock=self.socket)
             he_a2: CKKSTensor = CKKSTensor.load(context=self.context,
-                                                data=recv_msg(sock=self.socket))
+                                                data=he_a2_bytes)
             if verbose: print("\U0001F601 Received he_a2 from the server")
             a2: List = he_a2.decrypt().tolist() # the client decrypts he_a2
             a2: Tensor = torch.tensor(a2, requires_grad=True)
@@ -265,9 +266,10 @@ class Client:
                 "dJdW": dJdW.detach().to('cpu')
             }
             if verbose: print("\U0001F601 Sending dJda2, dJdW to the server")
-            send_msg(sock=self.socket, msg=pickle.dumps(server_grads))
+            _ = send_msg(sock=self.socket, msg=pickle.dumps(server_grads))
+            dJda_bytes, _ = recv_msg(sock=self.socket)
             dJda: CKKSTensor = CKKSTensor.load(context=self.context,
-                                               data=recv_msg(sock=self.socket))
+                                               data=dJda_bytes)
             if verbose: print("\U0001F601 Received dJda from the server")
             dJda = torch.Tensor(dJda.decrypt().tolist()).to(self.device)
             a.backward(dJda)  # calculating the gradients w.r.t the conv layers
@@ -283,28 +285,29 @@ class Client:
 def main():
     client = Client()
     client.init_socket(host='localhost', port=10080)
-    hyperparams = pickle.loads(recv_msg(sock=client.socket))
+    hyperparams, _ = recv_msg(sock=client.socket)
+    hyperparams = pickle.loads(hyperparams)
     if hyperparams["verbose"]:
         print("\U0001F601 Received the hyperparameters from the Server")
         print(hyperparams)
     client.load_ecg_dataset(train_name=project_path/"data/train_ecg.hdf5",
                             test_name=project_path/"data/test_ecg.hdf5",
                             batch_size=hyperparams["batch_size"])
-    # client.make_tenseal_context(4096,     # 4096a
-    #                             [40, 20, 40],
-    #                             pow(2, 20))
-    # client.make_tenseal_context(4096,   # 4096b
-    #                             [40, 20, 20],
-    #                             pow(2, 21))
-    # client.make_tenseal_context(8192,  # 8192a
-    #                             [40, 21, 21, 40], 
-    #                             pow(2, 21))
     # client.make_tenseal_context(8192,  # 8192b
     #                             [60, 40, 40, 60],
     #                             pow(2, 40))
-    client.make_tenseal_context(2048, 
-                                [18, 18, 18], 
-                                pow(2, 16))
+    client.make_tenseal_context(8192,  # 8192a
+                                [40, 21, 21, 40], 
+                                pow(2, 21))
+    # client.make_tenseal_context(4096,   # 4096b
+    #                             [40, 20, 20],
+    #                             pow(2, 21))
+    # client.make_tenseal_context(4096,     # 4096a
+    #                             [40, 20, 40],
+    #                             pow(2, 20))
+    # client.make_tenseal_context(2048, 
+    #                             [18, 18, 18], 
+    #                             pow(2, 16))
 
     if hyperparams["verbose"]:
         print("\U0001F601 Sending the context to the server (without the private key)")
