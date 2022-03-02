@@ -43,8 +43,8 @@ class ECGServer256:
         """
         if batch_encrypted:
             enc_x.reshape_([batch_size, 256])
-        # if batch_encrypted, then y's shape will be [1, 5], otherwise [batch_size, 5]
         if type(W) is Tensor:
+        # if batch_encrypted, then y's shape will be [1, 5], otherwise [batch_size, 5]
             y: CKKSTensor = enc_x.mm(W.T) + b
             print('forward with plaintext W')
         else: # CKKS Tensor
