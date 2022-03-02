@@ -264,7 +264,6 @@ class Client:
             send_msg(sock=self.socket, msg=pickle.dumps(dJda2))
             dJda, _ = recv_msg(sock=self.socket)
             if verbose: print("\U0001F601 Received dJda from the server")
-            # TODO: wrong shape here [4,4,256] instead of [4,256]
             dJda = CKKSTensor.load(context=self.context, data=dJda)
             dJda = dJda.decrypt().tolist()
             dJda = torch.Tensor(dJda).to(self.device)

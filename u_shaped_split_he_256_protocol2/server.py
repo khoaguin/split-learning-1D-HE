@@ -35,13 +35,14 @@ class ECGServer256:
                    enc_x: CKKSTensor, 
                    W: Union[Tensor, CKKSTensor], 
                    b: Tensor,
-                   batch_encrypted: bool):
+                   batch_encrypted: bool,
+                   batch_size: int):
         """
         The linear layer on homomorphic encrypted data
         Based on https://pytorch.org/docs/stable/generated/torch.nn.Linear.html
         """
         if batch_encrypted:
-            enc_x.reshape_([1, 256])
+            enc_x.reshape_([batch_size, 256])
         # if batch_encrypted, then y's shape will be [1, 5], otherwise [batch_size, 5]
         if type(W) is Tensor:
             y: CKKSTensor = enc_x.mm(W.T) + b
@@ -95,7 +96,6 @@ class ECGServer256:
         if type(self.cache["da2da"]) is Tensor:
             dJda: Tensor = torch.matmul(dJda2, self.cache["da2da"])
             dJda: CKKSTensor = ts.ckks_tensor(context, dJda.tolist())
-            print('aaa')
         else:  # it is CKKSTensor
             temp = self.cache["da2da"].transpose()
             print(f'type of W: {type(self.cache["da2da"])}')
@@ -160,6 +160,7 @@ class Server:
         total_batch = hyperparams["total_batch"]
         epoch = hyperparams["epoch"]
         batch_encrypted = hyperparams["batch_encrypted"]
+        batch_size = hyperparams["batch_size"]
         # set random seed
         np.random.seed(seed)
         torch.manual_seed(seed)
@@ -170,11 +171,11 @@ class Server:
 
         for e in range(epoch):
             print(f"---- Epoch {e+1} ----")
-            self.training_loop(total_batch, verbose, lr, batch_encrypted, epoch)
+            self.training_loop(total_batch, verbose, lr, batch_encrypted, epoch, batch_size)
             train_status, _ = recv_msg(self.connection)
             print(pickle.loads(train_status))
 
-    def training_loop(self, total_batch, verbose, lr, batch_encrypted, epoch):
+    def training_loop(self, total_batch, verbose, lr, batch_encrypted, epoch, batch_size):
         epoch_communication = 0
         for i in range(total_batch):
             self.ecg_model.clear_grad_and_cache()
