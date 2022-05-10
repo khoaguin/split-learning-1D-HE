@@ -16,14 +16,14 @@ from tenseal.tensors.ckkstensor import CKKSTensor
 print(f'tenseal version: {ts.__version__}')
 print(f'torch version: {torch.__version__}')
 
-project_path = Path(__file__).parents[1]
-print(f'project dir: {project_path}')
+project_path = Path(__file__).absolute().parents[1]
 
 
-class ECGServer256:
-
-    def __init__(self, init_weight_path: Union[str, Path]):
+class ECGServer:
+    def __init__(self, 
+                 init_weight_path: Union[str, Path]):
         checkpoint = torch.load(init_weight_path)
+        print(checkpoint.keys())
         self.params = dict(
             W = checkpoint["linear.weight"],  # [5, 256],
             b = checkpoint["linear.bias"]  # [5]
@@ -44,15 +44,18 @@ class ECGServer256:
         Based on https://pytorch.org/docs/stable/generated/torch.nn.Linear.html
         """
         if batch_encrypted:
-            enc_x.reshape_([1, 256])
+            enc_x.reshape_([1, enc_x.shape[0]])
         Wt = W.T
-         # encrypted using batch, y's shape: [1, 5], otherwise [batch_size, 5]
-        y: CKKSTensor = enc_x.mm(Wt) + b 
+         # if batch_encrypted is true, y's shape will be [1, 5],
+         # otherwise [batch_size, 5]
+        y: CKKSTensor = enc_x.mm(Wt) + b
         dydW = enc_x
         dydx = W
         return y, dydW, dydx
 
-    def forward(self, he_a: CKKSTensor, batch_encrypted: bool) -> CKKSTensor:
+    def forward(self, 
+                he_a: CKKSTensor, 
+                batch_encrypted: bool) -> CKKSTensor:
         # a2 = a*W' + b
         he_a2, _, W = self.enc_linear(he_a, 
                                       self.params["W"],
@@ -63,7 +66,7 @@ class ECGServer256:
 
     def backward(self, 
                  dJda2: Tensor, 
-                 context: Context) -> CKKSTensor:
+                 context: Context):
         """Calculate the gradients of the loss function w.r.t the bias
            and the encrypted activation map a received from the client    
 
@@ -83,7 +86,7 @@ class ECGServer256:
             "the grad of the loss function w.r.t b and b must have the same shape"
 
         dJda: Tensor = torch.matmul(dJda2, self.cache["da2da"])
-        dJda: CKKSTensor = ts.ckks_tensor(context, dJda.tolist())
+        # dJda: CKKSTensor = ts.ckks_tensor(context, dJda.tolist())
 
         return dJda
 
@@ -146,7 +149,7 @@ class Server:
                     init_weight_path: Union[str, Path]) -> None:
         """Build the neural network model for the server
         """
-        self.ecg_model = ECGServer256(init_weight_path)
+        self.ecg_model = ECGServer(init_weight_path)
 
     def train(self, hyperparams: dict):
         seed = hyperparams["seed"]
@@ -172,39 +175,42 @@ class Server:
     def training_loop(self, total_batch, verbose, lr, batch_encrypted, epoch):
         avg_communication = 0
         for i in range(total_batch):
+            # forward pass
+            if verbose: print("Forward pass ---")
             self.ecg_model.clear_grad_and_cache()
+            # receive the encrypted activation maps from the client
             he_a, recv_size1 = recv_msg(sock=self.connection)
             he_a: CKKSTensor = CKKSTensor.load(context=self.client_ctx,
                                                data=he_a)
-            # if verbose: print("\U0001F601 Received he_a from the client")
-            if verbose: print("Forward pass ---")
+            if verbose: print(f"\U0001F601 Received he_a from the client with shape {he_a.shape}")
             he_a2: CKKSTensor = self.ecg_model.forward(he_a, batch_encrypted)
-            # if verbose: print("\U0001F601 Sending he_a2 to the client")
+            if verbose: print("\U0001F601 Sending he_a2 to the client")
             send_size1 = send_msg(sock=self.connection, msg=he_a2.serialize())
             
             if verbose: print("Backward pass --- ")
             grads, recv_size2 = recv_msg(sock=self.connection)
             grads = pickle.loads(grads)
+            if verbose: print("\U0001F601 Received dJda2, dJdW from the client")
             self.ecg_model.check_update_grads(grads["dJdW"])
-            dJda: CKKSTensor = self.ecg_model.backward(grads["dJda2"], 
-                                                       self.client_ctx)
-            # if verbose: print("\U0001F601 Sending dJda to the client")
-            send_size2 = send_msg(sock=self.connection, msg=dJda.serialize())
+            dJda = self.ecg_model.backward(grads["dJda2"], 
+                                           self.client_ctx)
+            if verbose: print("\U0001F601 Sending dJda to the client")
+            send_size2 = send_msg(sock=self.connection, msg=pickle.dumps(dJda))
             self.ecg_model.update_params(lr=lr) # updating the parameters
 
-            comminucation_size = recv_size1 + recv_size2 + send_size1 + send_size2
-            avg_communication += comminucation_size
+            # comminucation_size = recv_size1 + recv_size2 + send_size1 + send_size2
+            # avg_communication += comminucation_size
 
-            if i == 10:
-                print(f"avg communication for 1 forward and backward pass: "
-                      f"{avg_communication/10} (Mb)")
-                print(f"approximated total communication: "
-                      f"{avg_communication/10 * total_batch * epoch * 1e-6} (Tb)")
-                break
-                
+            # if i == 10:
+            #     print(f"avg communication for 1 forward and backward pass: "
+            #           f"{avg_communication/10} (Mb)")
+            #     print(f"approximated total communication: "
+            #           f"{avg_communication/10 * total_batch * epoch * 1e-6} (Tb)")
+            #     break
+
 
 def main(hyperparams):
-    # establish the connection with the client, send the hyperparameters
+    # establish the connection, send the hyperparams
     server = Server()
     server.init_socket(host='localhost', port=10080)
     if hyperparams["verbose"]:
@@ -216,19 +222,16 @@ def main(hyperparams):
     if hyperparams["verbose"]:
         print("\U0001F601 Received the TenSeal context from the Client")
     # build and train the model
-    server.build_model('weights/init_weight.pth')
+    server.build_model(project_path/'u_shaped_split_he/weights/init_weight_ptbxl.pth')
     server.train(hyperparams)
-    # save the model to .pth file
-    if hyperparams["save_model"]:
-        torch.save(server.ecg_model.params, 
-                   './weights/trained_server_2048_batch.pth')
 
 
 if __name__ == "__main__":
+    print(f'project dir: {project_path}')
     hyperparams = {
         'verbose': True,
         'batch_size': 4,
-        'total_batch': 3312, # 3312 = 13245 / 4
+        'total_batch': 4817,  # 19267 / 4
         'epoch': 10,
         'lr': 0.001,
         'seed': 0,

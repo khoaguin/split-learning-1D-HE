@@ -143,7 +143,7 @@ def main():
     batch_size = 4
     train_dataset = PTBXL(train=True)
     train_loader = DataLoader(train_dataset, batch_size=batch_size)
-    total_batch = 4817  # 19267 / batch_size
+    total_batch = 4817  # 19267 / 4
     # prepare for training
     device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
     torch.cuda.get_device_name(0)
@@ -175,4 +175,5 @@ def main():
     #            project_path/'weights/trained_client_split_plaintext.pth')
 
 
-main()
+if __name__ == "__main__":
+    main()
