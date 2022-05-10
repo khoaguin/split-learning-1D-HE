@@ -292,6 +292,15 @@ def main():
     # build and train the model
     client.build_model(project_path/'u_shaped_split_he/weights/init_weight_ptbxl.pth')
     train_losses, train_accs = client.train(hyperparams)
+    # save the training results and model
+    if hyperparams["save_model"]:
+        df = pd.DataFrame({  # save model training process into csv file
+            'train_losses': train_losses,
+            'train_accs': train_accs,
+        })
+        df.to_csv(project_path/'u_shaped_split_he/outputs/loss_and_acc_ptbxl_4096b.csv')
+        torch.save(client.ecg_model.state_dict(), 
+                   project_path/'u_shaped_plit_he/weights/trained_client_ptbxl_4096b.pth')
 
 
 if __name__ == "__main__":

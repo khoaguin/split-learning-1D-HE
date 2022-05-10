@@ -23,7 +23,6 @@ class ECGServer:
     def __init__(self, 
                  init_weight_path: Union[str, Path]):
         checkpoint = torch.load(init_weight_path)
-        print(checkpoint.keys())
         self.params = dict(
             W = checkpoint["linear.weight"],  # [5, 256],
             b = checkpoint["linear.bias"]  # [5]
@@ -224,12 +223,16 @@ def main(hyperparams):
     # build and train the model
     server.build_model(project_path/'u_shaped_split_he/weights/init_weight_ptbxl.pth')
     server.train(hyperparams)
+    # save the model to .pth file
+    if hyperparams["save_model"]:
+        torch.save(server.ecg_model.params, 
+                   './weights/trained_server_ptbxl_4096b.pth')
 
 
 if __name__ == "__main__":
     print(f'project dir: {project_path}')
     hyperparams = {
-        'verbose': True,
+        'verbose': False,
         'batch_size': 4,
         'total_batch': 4817,  # 19267 / 4
         'epoch': 10,
