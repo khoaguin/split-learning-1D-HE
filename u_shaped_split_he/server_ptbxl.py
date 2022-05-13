@@ -232,7 +232,7 @@ def main(hyperparams):
 if __name__ == "__main__":
     print(f'project dir: {project_path}')
     hyperparams = {
-        'verbose': True,
+        'verbose': False,
         'batch_size': 4,
         'total_batch': 4817,  # 19267 / 4
         'epoch': 10,
