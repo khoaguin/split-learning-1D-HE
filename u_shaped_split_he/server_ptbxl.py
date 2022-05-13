@@ -226,7 +226,7 @@ def main(hyperparams):
     # save the model to .pth file
     if hyperparams["save_model"]:
         torch.save(server.ecg_model.params, 
-                   './weights/trained_server_ptbxl_8192.pth')
+                   project_path/'u_shaped_split_he/weights/trained_server_ptbxl_8192.pth')
 
 
 if __name__ == "__main__":
