@@ -281,8 +281,11 @@ def main():
         print("\U0001F601 Received the hyperparameters from the Server")
         print(hyperparams)
     # make the tenseal context and send it (without the private key) to the server
-    client.make_tenseal_context(4096,   # 4096b
-                                [40, 20, 20],
+    # client.make_tenseal_context(4096,   # 4096b
+    #                             [40, 20, 20],
+    #                             pow(2, 21))
+    client.make_tenseal_context(8192, 
+                                [40, 21, 21, 40],
                                 pow(2, 21))
     if hyperparams["verbose"]:
         print("\U0001F601 Sending the context to the server (without the private key)")
@@ -294,13 +297,13 @@ def main():
     train_losses, train_accs = client.train(hyperparams)
     # save the training results and model
     if hyperparams["save_model"]:
-        df = pd.DataFrame({  # save model training process into csv file
-            'train_losses': train_losses,
-            'train_accs': train_accs,
-        })
-        df.to_csv(project_path/'u_shaped_split_he/outputs/loss_and_acc_ptbxl_4096b.csv')
         torch.save(client.ecg_model.state_dict(), 
-                   project_path/'u_shaped_plit_he/weights/trained_client_ptbxl_4096b.pth')
+                   project_path/'u_shaped_split_he/weights/trained_client_ptbxl_8192.pth')
+        # df = pd.DataFrame({  # save model training process into csv file
+        #     'train_losses': train_losses,
+        #     'train_accs': train_accs,
+        # })
+        # df.to_csv(project_path/'u_shaped_split_he/outputs/loss_and_acc_ptbxl_4096b.csv')
 
 
 if __name__ == "__main__":

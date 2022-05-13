@@ -226,13 +226,13 @@ def main(hyperparams):
     # save the model to .pth file
     if hyperparams["save_model"]:
         torch.save(server.ecg_model.params, 
-                   './weights/trained_server_ptbxl_4096b.pth')
+                   './weights/trained_server_ptbxl_8192.pth')
 
 
 if __name__ == "__main__":
     print(f'project dir: {project_path}')
     hyperparams = {
-        'verbose': False,
+        'verbose': True,
         'batch_size': 4,
         'total_batch': 4817,  # 19267 / 4
         'epoch': 10,
