@@ -34,7 +34,7 @@ tenseal==0.3.10
     * `client.py` and `server.py`: code for the client and the server to train the split learning protocol on plaintext activation maps with bigger size, only for the MIT-DB dataset
 
 #### Running the code
-
+Make sure you have the data files needed in the `data/` directory (`train_ecg.hdf5` and `test_ecg.hdf5` for the MIT-DB dataset, and `train_ptbxl.hdf5` and `test_ptbxl.hdf5` for the PTB-XL dataset).  
 To run the code, simply `cd` into the directory and run the code for server side and client side. Note that you need to run the code for server side first. For example, if you want to run the u-shaped split learning using HE for the PTB-XL dataset, do the following:  
 ```
 cd u_shaped_split_he
