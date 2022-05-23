@@ -138,7 +138,7 @@ class Server:
         self.socket.listen()
         print('Listening on', (host, port))
         self.connection, addr = self.socket.accept()  # wait for the client to connect
-        print(f'Connection: {self.connection} \nAddress: {addr}')
+        print(f'Connected. \nAddress: {addr}')
 
     def recv_ctx(self):
         client_ctx_bytes, _ = recv_msg(sock=self.connection)
