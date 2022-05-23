@@ -298,7 +298,7 @@ def main():
     # save the training results and model
     if hyperparams["save_model"]:
         torch.save(client.ecg_model.state_dict(), 
-                   project_path/'u_shaped_split_he/weights/trained_client_ptbxl_8192.pth')
+                   project_path/'u_shaped_split_he/weights/trained_client_ptbxl_4096.pth')
         # df = pd.DataFrame({  # save model training process into csv file
         #     'train_losses': train_losses,
         #     'train_accs': train_accs,
