@@ -281,9 +281,9 @@ def main():
         print("\U0001F601 Received the hyperparameters from the Server")
         print(hyperparams)
     # make the tenseal context and send it (without the private key) to the server
-    client.make_tenseal_context(4096,   # 4096b
-                                [40, 20, 20],
-                                pow(2, 21))
+    client.make_tenseal_context(4096,   # 4096a
+                                [40, 20, 40],
+                                pow(2, 20))
     # client.make_tenseal_context(8192, 
     #                             [40, 21, 21, 40],
     #                             pow(2, 21))
