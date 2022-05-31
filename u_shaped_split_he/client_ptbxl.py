@@ -281,12 +281,15 @@ def main():
         print("\U0001F601 Received the hyperparameters from the Server")
         print(hyperparams)
     # make the tenseal context and send it (without the private key) to the server
-    client.make_tenseal_context(4096,   # 4096a
-                                [40, 20, 40],
-                                pow(2, 20))
+    # client.make_tenseal_context(4096,   # 4096
+    #                             [40, 20, 20],
+    #                             pow(2, 21))
     # client.make_tenseal_context(8192, 
     #                             [40, 21, 21, 40],
     #                             pow(2, 21))
+    client.make_tenseal_context(2048, 
+                            [18, 18, 18],
+                            pow(2, 16))
     if hyperparams["verbose"]:
         print("\U0001F601 Sending the context to the server (without the private key)")
     client.send_context()
@@ -298,7 +301,7 @@ def main():
     # save the training results and model
     if hyperparams["save_model"]:
         torch.save(client.ecg_model.state_dict(), 
-                   project_path/'u_shaped_split_he/weights/trained_client_ptbxl_4096.pth')
+                   project_path/'u_shaped_split_he/weights/trained_client_ptbxl_2048.pth')
         # df = pd.DataFrame({  # save model training process into csv file
         #     'train_losses': train_losses,
         #     'train_accs': train_accs,
