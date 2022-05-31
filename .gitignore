@@ -9,3 +9,4 @@ experiments.ipynb
 data/ptb-xl/
 data/train_ptbxl.hdf5
 data/test_ptbxl.hdf5
+archive/*
