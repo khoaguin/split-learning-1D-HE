@@ -1,10 +1,13 @@
 # Split Learning HE
+![](./images/U-shapedSL.png)
+
 Split learning involves 2 parties (a client and a server) that collaboratively train a model. The client keeps the data on his side, trains his part of the model to produce the activation maps, then sends those activation maps to the server. The server subsequently continues the training process. This way, the client never needs to send his data to the server. However, the activation maps can still leak information about the client's data. In this project, we train a split learning 1D CNN model on homomorphic encrypted activation maps to solve this privacy leakage.
 
 ### Requirements
-torch==1.10.0+cu102  
-tenseal==0.3.10
-
+Essentially, we only need these 2 main libraries:  
+`torch==1.10.0+cu102`  
+`tenseal==0.3.10`  
+More detailed requirements are in the file `requirements.txt`.
 ### Repository Structure
 
 * `data/`  
