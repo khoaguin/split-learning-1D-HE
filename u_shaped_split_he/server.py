@@ -185,6 +185,7 @@ class Server:
             grads, recv_size2 = recv_msg(sock=self.connection)
             grads = pickle.loads(grads)
 
+            # code for evaluating the privacy leakage in the backward pass
             # try:
             #     reconstructed_a = torch.matmul(
             #         torch.inverse(grads["dJda2"]), grads["dJdW"]
